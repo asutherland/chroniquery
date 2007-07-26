@@ -19,7 +19,7 @@ They should apply cleanly against rev13/15 of the chronicle recorder trunk.
 
 To see something sorta working, you could do the following AFTER modifying
 scripts/chronicle to have the right path to chronicle:
-  cd examples; gcc loopy.c -g -o loopy; ../scripts/chronicle ./loopy
+  cd examples; gcc loopy.c -g -o loopy; ../scripts/chronicle ./loopy; cd ..
   cd python; python chronisole.py ../examples/loopy
 
 Andrew Sutherland
