@@ -1,0 +1,8 @@
+#!/bin/sh
+
+CHRONBASE=~/rev_control/git/chronicle-recorder/chronicle
+
+appname=$1
+shift
+
+PATH=$CHRONBASE:$PATH CHRONICLE_DB=`basename $appname`.db VALGRIND_LIB=$CHRONBASE/valgrind/.in_place $CHRONBASE/valgrind/coregrind/valgrind --tool=chronicle $appname "$@"

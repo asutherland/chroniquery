@@ -1,0 +1,26 @@
+Chroniquery is a python library that interacts with the chronicle-recorder
+query mechanism.  It adds some abstraction.  Hooray.
+This is a work in progress!
+
+the bzr repository for chroniquery is here:
+http://www.visophyte.org/rev_control/bzr/chroniquery/
+
+chronicle-recorder lives here:
+http://code.google.com/p/chronicle-recorder/
+
+but this python library depends on changes I have made.  Option A is to get
+them from my (st)git repository:
+http://www.visophyte.org/rev_control/git/chronicle-recorder.git/
+Note that the applied patches are on the acs-base branch.  If you can figure
+out how to get at the underlying stgit patch definitions, they should be there
+too.  Otherwise, you can get at the manually exported patches from:
+http://www.visophyte.org/rev_control/patches/chronicle-recorder/
+They should apply cleanly against rev13/15 of the chronicle recorder trunk.
+
+To see something sorta working, you could do the following AFTER modifying
+scripts/chronicle to have the right path to chronicle:
+  cd examples; gcc loopy.c -g -o loopy; ../scripts/chronicle ./loopy
+  cd python; python chronisole.py ../examples/loopy
+
+Andrew Sutherland
+sombrero@alum.mit.edu
