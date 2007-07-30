@@ -23,10 +23,10 @@ class ChroniQuery(threading.Thread):
     NOTICE_COMPLETE  = 0
     NOTICE_STREAMING = 1
     
-    def __init__(self, dbname):
+    def __init__(self, dbname, querylog=False):
         threading.Thread.__init__(self)
         
-        self._spawn(dbname)
+        self._spawn(dbname, querylog=querylog)
         
         # lock for everything before the next blank line
         self._reqmap_lock = threading.Lock()
@@ -44,7 +44,7 @@ class ChroniQuery(threading.Thread):
         
         self.start()
     
-    def _spawn(self, dbname):
+    def _spawn(self, dbname, querylog=False):
         # okay, we need to find chronicle-query on the path, and shell=True
         #  screws us for some reason...
         # broke-ass fallback...
@@ -57,6 +57,8 @@ class ChroniQuery(threading.Thread):
         args = [exename,
                 '--db',
                 dbname]
+        if querylog:
+            args.append('--log')
         self.child = subprocess.Popen(args,
                                       shell=False,
                                       stdin=subprocess.PIPE,

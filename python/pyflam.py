@@ -24,7 +24,7 @@ import re, sys
 class FlamOut(object):
     def __init__(self):
         self._cmap = {}
-        self._pat = re.compile('(?:{([^}]+)})|(%[^sd]*[sd])')
+        self._pat = re.compile('(?:{([^}]+)})|(%([-#0 +]*)(\d*)\.?(\d*)[sd])')
 
         self.init_map()
 
@@ -68,7 +68,7 @@ class FlamOut(object):
         '''
         # Base ANSI colors
         if color < 16:
-            return _ANSI_COLOR_LUT[color]
+            return self._ANSI_COLOR_LUT[color]
         # 6x6x6 Color Cube
         elif color < 232:
             color -= 16
@@ -102,6 +102,30 @@ class FlamOut(object):
             if m.group(2) is not None:
                 iarg = state['iarg']
                 v = str(args[iarg])
+                
+                #%([#0- +]*)(\d*)(?:\.(\d*))?[sd]
+                alignLeft = False
+                if m.group(3):
+                    conversionFlags = m.group(3)
+                    if '-' in conversionFlags:
+                        alignLeft = True
+                if m.group(4):
+                    mini = int(m.group(4))
+                else:
+                    mini = 0
+                if m.group(5):
+                    limit = int(m.group(5))
+                else:
+                    limit = 64000
+                    
+                if len(v) > limit:
+                    v = v[:limit]
+                if len(v) < mini:
+                    if alignLeft:
+                        v += ' ' * (mini - len(v))
+                    else:
+                        v = ' ' * (mini - len(v)) + v
+                            
                 state['offset'] = state['offset'] + len(v)
                 state['iarg'] = iarg + 1
                 return v

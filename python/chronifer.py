@@ -25,7 +25,7 @@ class Chronifer(object):
     basically my __main__ test code re-purposed towards reuse.
     '''
 
-    def __init__(self, exe_file, db_file=None):
+    def __init__(self, exe_file, db_file=None, querylog=False):
 	exe_file = os.path.abspath(exe_file)
 
         if db_file is None:
@@ -36,7 +36,7 @@ class Chronifer(object):
         self.exe_file = exe_file
         self.db_file = db_file
         
-        self.c = ChroniQuery(self.db_file)
+        self.c = ChroniQuery(self.db_file, querylog=querylog)
         
         self._startupPrep()
         
@@ -52,8 +52,8 @@ class Chronifer(object):
         trash = c.getAsync()
 
         comp_units = self.c.ssa('lookupCompilationUnits',
-                                do_name=self.exe_file,
-                                cu_name='')
+                                debugObjectName=self.exe_file,
+                                compilationUnitName='')
     
         ranges = []
         for comp_unit in comp_units:
@@ -101,7 +101,8 @@ class Chronifer(object):
     def getSourceLines(self, source_line):
         '''
         Return a list of a 4-tuples, where the tuple's contents are
-        (the line number,
+        (filename,
+         the line number,
          text preceding the executed part of the line,
          the actual text for the part of the line being executed,
          text following the executed part of the line)
@@ -116,11 +117,11 @@ class Chronifer(object):
         for lineno in range(sl, el + adjust):
             line = linecache.getline(filename, lineno).rstrip()
             if lineno == sl:
-                lines.append((lineno, line[:sc], line[sc:], ''))
+                lines.append((filename, lineno, line[:sc], line[sc:], ''))
             elif lineno == el:
-                lines.append((lineno, '', line[:ec], line[ec:]))
+                lines.append((filename, lineno, '', line[:ec], line[ec:]))
             else:
-                lines.append((lineno, '', line, ''))
+                lines.append((filename, lineno, '', line, ''))
         return lines
     
     def scanBySourceLine(self):
@@ -171,10 +172,10 @@ class Chronifer(object):
                         continue
                     else:
                         filename = sinfo['filename']
-                        sl = sinfo['start_line']
-                        el = sinfo['end_line']
-                        sc = sinfo['start_column'] - 1
-                        ec = sinfo['end_column']
+                        sl = sinfo['startLine']
+                        el = sinfo.get('endLine', sl+1)
+                        sc = sinfo['startColumn'] - 1
+                        ec = sinfo.get('endColumn', 1)
                         
                         curline = (filename, sl, el, sc, ec)
                         self._instrCache[address] = curline

@@ -17,7 +17,9 @@
 
 from chronifer import Chronifer
 
-import optparse
+import optparse, os.path
+
+from pyflam import pout
 
 try:
     from pyflam import pout
@@ -64,8 +66,8 @@ class Chronisole(object):
             ldisplay = ' '.join(ldisplay)
 
             for line in lines:
-                fmt = '{s}%4d: %s{n}%s{s}%s {.60}' + ldisplay
-                pout(fmt, *line)
+                fmt = '{s}%-10.10s %4d: %s{n}%s{s}%s {.60}' + ldisplay
+                pout(fmt, os.path.basename(line[0]), *line[1:])
                 
                 ldisplay = ''
                 
@@ -84,6 +86,10 @@ def main(args=None):
                        action='store_false', dest='style',
                        default=True)
     
+    oparser.add_option('--log',
+                       action='store_true', dest='log', default=False,
+                       help='Tell chronicle-query to log /tmp')
+    
     opts, args = oparser.parse_args(args)
 
     htmlfile = None
@@ -94,7 +100,7 @@ def main(args=None):
         pout = pyflam.FlamHTML(htmlfile, style=opts.style)
         pout.write_html_intro('Chronisole Output')
 
-    cs = Chronisole(*args)
+    cs = Chronisole(querylog=opts.log, *args)
     cs.show()
 
     if htmlfile:
