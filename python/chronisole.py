@@ -1,3 +1,4 @@
+#!/usr/bin/env python
 # chroniquery, a chronicle-recorder python interface/abstraction library
 #    Copyright (C) 2007 Andrew Sutherland (sombrero@alum.mit.edu)
 #
