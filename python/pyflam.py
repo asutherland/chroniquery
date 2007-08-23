@@ -24,7 +24,7 @@ import re, sys
 class FlamOut(object):
     def __init__(self):
         self._cmap = {}
-        self._pat = re.compile('(?:{([^}]+)})|(%([-#0 +]*)(\d*)\.?(\d*)[sd])')
+        self._pat = re.compile('(?:{([^}]+)})|(%([-#0 +]*)(\d*)\.?(\d*)([sdx]))')
 
         self.init_map()
 
@@ -97,13 +97,16 @@ class FlamOut(object):
             self._indentLevel = 0
 
     def __call__(self, msg, *args, **kwargs):
-        state = {'offset': 0, 'iarg': 0}
+        state = {'offset': self._indentLevel, 'iarg': 0}
         def map_helper(m):
             if m.group(2) is not None:
                 iarg = state['iarg']
-                v = str(args[iarg])
+                if m.group(6) == 'x':
+                    v = hex(args[iarg])
+                else:
+                    v = str(args[iarg])
                 
-                #%([#0- +]*)(\d*)(?:\.(\d*))?[sd]
+                #%([#0- +]*)(\d*)(?:\.(\d*))?[sdx]
                 alignLeft = False
                 if m.group(3):
                     conversionFlags = m.group(3)

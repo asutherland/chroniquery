@@ -46,12 +46,26 @@ class Chronisole(object):
     A console, command line, or at least batch processing interface to
     Chronifer.
     '''
-    def __init__(self, *args, **kwargs):
+    def __init__(self, soleargs, action,
+                 *args, **kwargs):
+        self.action = action
         self.cf = Chronifer(*args, **kwargs)
+        
+        self.functions = soleargs.get('functions', [])
+        self.excluded_functions = soleargs.get('excluded_functions', [])
+        self.max_depth = soleargs.get('depth', 0)
+    
+    def run(self):
+        if self.action == 'show':
+            self.show()
+        elif self.action == 'trace':
+            self.trace(self.functions)
     
     def show(self, locals=True):
+        ranges = self.cf.getRangesUsingExecutableCompilationUnits()
+        
         last_locals = {}
-        for startStamp, endStamp, sline in self.cf.scanBySourceLine():
+        for startStamp, endStamp, sline in self.cf.scanBySourceLine(ranges):
             lines = self.cf.getSourceLines(sline)
             
             locals = self.cf.getLocals(endStamp+1)
@@ -66,6 +80,9 @@ class Chronisole(object):
                     ldisplay.append('{s}%s:%s' % (lname, str(locals[lname])))
             ldisplay = ' '.join(ldisplay)
 
+            callinfo = self.cf.findStartOfCall(startStamp)
+            print callinfo
+
             for line in lines:
                 fmt = '{s}%-10.10s %4d: %s{n}%s{s}%s {.60}' + ldisplay
                 pout(fmt, os.path.basename(line[0]), *line[1:])
@@ -73,6 +90,92 @@ class Chronisole(object):
                 ldisplay = ''
                 
             last_locals = locals
+    
+    def trace(self, function_names):
+        func_name_to_addr = {}
+        for func_name in function_names:
+            func = self.cf.lookupGlobalFunction(func_name)
+            self.trace_function(func)
+            #self.cf.scanEnterSP(1388067, #func.beginTStamp,
+            #                    func.endTStamp)
+    
+    def _formatValue(self, value):
+        if type(value) == int:
+            v = hex(value)
+        elif isinstance(value, basestring):
+            v = "'%s'" % value
+        else:
+            v = str(value)
+        return v        
+    
+    def _formatParameters(self, parameters):
+        str_parts = []
+        for label, value in parameters:
+            v = self._formatValue(value)
+            str_parts.append('%s: %s' % (label, v))
+    
+        return ', '.join(str_parts)
+    
+    def trace_function(self, func):
+        def helpy(beginTStamp, endTStamp, depth=1):
+            # iterate over the calls found between the given start/end
+            #  timestamps, which have been bounded to be inside our parent
+            #  function...
+            for (subBeginTStamp, subEndTStamp, subPreCallSP,
+                 subStackEnd, thread) in self.cf.scanCallsBetweenTimes(beginTStamp,
+                                                                       endTStamp):
+                subfunc = self.cf.findRunningFunction(subBeginTStamp)
+                if subfunc:
+                    if subfunc.name in self.excluded_functions:
+                        continue
+                    
+                    pc = self.cf.getPC(subBeginTStamp)
+                    pout('{fn}%s {.20}{w}%s {.30}{n}%s', subfunc.name,
+                         self._formatValue(self.cf.getReturnValue(subEndTStamp, subfunc)),
+                         self._formatParameters(self.cf.getParameters(subBeginTStamp)),
+                         )
+                    pout.i(2)
+                    if (not self.max_depth) or depth < self.max_depth:
+                        helpy(subBeginTStamp, subEndTStamp, depth + 1)
+                    #sline = self.cf.getSourceLineInfo(subBeginTStamp)
+                    #if sline:
+                    #    pout('{s}%s', self.cf.getSourceLines(sline))
+                    pout.i(-2)
+        
+        # find all the times the function in question was executed
+        for func, beginTStamp in self.cf.scanExecution(func):
+            callInfo = self.cf.findStartOfCall(beginTStamp+1)
+            endTStamp = self.cf.findEndOfCall(beginTStamp)
+            #print 'BEGIN', beginTStamp, 'BOB', callInfo[0], 'END', endTStamp, 'BOB', callInfo[1]
+            if callInfo:
+                beginTStamp, endTStamp = callInfo[0:2]
+            else:
+                beginTStamp += 1
+            #self.dump_stack(beginTStamp)
+            pout('{fn}%s {.20}{w}%s {.30}{n}%s', func.name,
+                 self._formatValue(self.cf.getReturnValue(endTStamp, func)),
+                 self._formatParameters(self.cf.getParameters(beginTStamp)),
+                 )
+            pout.i(2)
+            if self.max_depth != 1:
+                helpy(beginTStamp, endTStamp)
+            pout.i(-2)
+            
+    def dump_stack(self, tstamp, pre=8, post=8):
+        mappy = {}
+        for delta in range(-8, 8):
+            rsp = self.cf.getSP(tstamp + delta)
+            mappy.setdefault(rsp, []).append(delta)
+        
+        sp = self.cf.getSP(tstamp)
+        for address in range(sp - pre*self.cf._ptr_size, sp + (pre+1)*self.cf._ptr_size, self.cf._ptr_size):
+            val = self.cf.readInt(tstamp, address)
+            if address == sp:
+                pout('{g}%x %x {.20}%s', address, val, mappy.get(address))
+            else:
+                pout('{n}%x %x {.20}%s', address, val, mappy.get(address))
+        
+                
             
     def stop(self):
         self.cf.stop()
@@ -87,9 +190,24 @@ def main(args=None):
                        action='store_false', dest='style',
                        default=True)
     
+    oparser.add_option('-f', '--func',
+                       dest='functions', action='append', type='str',
+                       help='Add list to list of functions to process.',
+                       )
+    oparser.add_option('-x', '--exclude-func',
+                       dest='excluded_functions', action='append', type='str',
+                       default=[],
+                       help='Exclude functions from processing')
+    oparser.add_option('-d', '--depth',
+                       dest='depth', type='int',
+                       default=0)
+    
     oparser.add_option('--log',
                        action='store_true', dest='log', default=False,
                        help='Tell chronicle-query to log /tmp')
+    oparser.add_option('-X', '--extreme-debug',
+                       action='store_true', dest='extremeDebug', default=False,
+                       help='like --log, but on the console and perhaps cooler')
     
     opts, args = oparser.parse_args(args)
 
@@ -100,9 +218,14 @@ def main(args=None):
         htmlfile = open(opts.html_filename, 'w')
         pout = pyflam.FlamHTML(htmlfile, style=opts.style)
         pout.write_html_intro('Chronisole Output')
-
-    cs = Chronisole(querylog=opts.log, *args)
-    cs.show()
+    
+    cs = Chronisole({'functions': opts.functions,
+                     'excluded_functions': opts.excluded_functions,
+                     'depth': opts.depth},
+                    querylog=opts.log,
+                    extremeDebug=opts.extremeDebug,
+                    *args)
+    cs.run()
 
     if htmlfile:
         pout.write_html_outro()

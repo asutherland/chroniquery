@@ -23,8 +23,10 @@ class ChroniQuery(threading.Thread):
     NOTICE_COMPLETE  = 0
     NOTICE_STREAMING = 1
     
-    def __init__(self, dbname, querylog=False):
+    def __init__(self, dbname, querylog=False, extremeDebug=False):
         threading.Thread.__init__(self)
+        
+        self.setDaemon(True)
         
         self._spawn(dbname, querylog=querylog)
         
@@ -40,7 +42,7 @@ class ChroniQuery(threading.Thread):
         self._async_lock = threading.Lock()
         self._async = []
         
-        self._extremeDebug = False
+        self._extremeDebug = extremeDebug
         
         self.start()
     
@@ -160,9 +162,20 @@ class ChroniQuery(threading.Thread):
             self._reqmap[cid] = (notice_type, cond)
         finally:
             self._reqmap_lock.release()
+
+        # get any unicode out of our system...
+        unsafe_args = kwargs
+        kwargs = {}
+        for key, val in unsafe_args.items():
+            if type(key) == unicode:
+                key = str(key)
+            elif type(val) == unicode:
+                val = str(val)
+            kwargs[key] = val
         
         kwargs['id'] = cid
         kwargs['cmd'] = command_name
+        
         
         json_data = simplejson.dumps(kwargs)
         if self._extremeDebug:
