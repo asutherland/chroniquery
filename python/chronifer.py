@@ -365,16 +365,17 @@ class Chronifer(object):
                                     }]):
             #print ':::', dvalue
             if 'bytes' in dvalue:
-                offset = dvalue['start'] - address
-                length = dvalue['length']
+                offset = (dvalue['start'] - address) * 2
+                length = dvalue['length'] * 2
                 #print 'offset', offset, 'length', length
+                #print len(dstr[:offset]), len(dvalue['bytes']), len(dstr[offset+length:]) 
                 dstr = dstr[:offset] + dvalue['bytes']  + dstr[offset+length:]
         rstr = ''
         for idx in range(0, len(dstr), 2):
             rstr += chr(int(dstr[idx:idx+2], 16)&0xff)
         return rstr
 
-    def readCString(self, tstamp, address, maxlength=256, probesize=1):
+    def readCString(self, tstamp, address, maxlength=256, probesize=128):
         #print 'READING FROM', hex(address)
         if maxlength and maxlength < probesize:
             probesize = maxlength
