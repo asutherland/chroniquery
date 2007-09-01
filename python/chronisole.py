@@ -154,15 +154,17 @@ class Chronisole(object):
             #  track tricks us.  so we use the simple heuristic of scanning
             #  through the code until we find the opcode that we expect.
             # 32-bit only for now.
-            if self.cf._reg_bits == 32:
-                fudgeStamp = beginTStamp
-                while fudgeStamp < beginTStamp + 16:
-                    entry_pc   = self.cf.getPC(fudgeStamp)
-                    entry_code = self.cf.readMem(fudgeStamp, entry_pc, 1)
-                    if entry_code == '\x55':
-                        beginTStamp = fudgeStamp
-                        break
-                    fudgeStamp += 1
+            # UPDATE! it turns out we do not need to fudge, now that I
+            #  understand location lists, it turns out this is moot. 
+#            if self.cf._reg_bits == 32:
+#                fudgeStamp = beginTStamp
+#                while fudgeStamp < beginTStamp + 16:
+#                    entry_pc   = self.cf.getPC(fudgeStamp)
+#                    entry_code = self.cf.readMem(fudgeStamp, entry_pc, 1)
+#                    if entry_code == '\x55':
+#                        beginTStamp = fudgeStamp
+#                        break
+#                    fudgeStamp += 1
             
             #callInfo = self.cf.findStartOfCall(beginTStamp+1)
             endTStamp = self.cf.findEndOfCall(beginTStamp)
