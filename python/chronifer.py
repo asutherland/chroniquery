@@ -120,6 +120,12 @@ class Chronifer(object):
                            name=func_name)
         return self._fabFunction(finfo)
     
+    def lookupGlobalFunctions(self, func_pattern):
+        for finfo in self.c.ssm('lookupGlobalFunctions',
+                                name=func_pattern):
+            if 'name' in finfo:
+                yield self._fabFunction(finfo)
+    
     def getRangesUsingExecutableCompilationUnits(self):
         comp_units = self.c.ssa('lookupCompilationUnits',
                                 debugObjectName=self.exe_file,
@@ -462,12 +468,24 @@ class Chronifer(object):
     def _getValueFromPacket(self, tstamp, pinfo):
         return self.getValue(tstamp, pinfo['valKey'], pinfo['typeKey'])
     
-    def getParameters(self, tstamp):
+    def getParameters(self, tstamp, func=None):
+        if func is None:
+            func = self.findRunningFunction(tstamp)
+
+        # find the timestamp at which the prologue has been executed, it
+        #  may be stashing parameters in locals (which may or may not be
+        #  dumb)
+        if func.prologueEnd:
+            prologueEndTStamp = self.scanInstructionExecuted(tstamp, func.prologueEnd)
+        else:
+            # this is sad, but there's not a lot to do
+            prologueEndTStamp = tstamp
+
         params = []
-        for pinfo in self.c.ssm('getParameters', TStamp=tstamp):
+        for pinfo in self.c.ssm('getParameters', TStamp=prologueEndTStamp):
             if 'name' in pinfo:
                 params.append((pinfo['name'],
-                               self._getValueFromPacket(tstamp, pinfo)))
+                               self._getValueFromPacket(prologueEndTStamp, pinfo)))
         
         return params
     
@@ -562,6 +580,20 @@ class Chronifer(object):
                     sline = self.getSourceLineInfo(tstamp)
                     if sline:
                         print self.getSourceLines(sline)
+
+    def scanInstructionExecuted(self, timestamp, address, endTStamp=None):
+        if endTStamp is None:
+            endTStamp = self._endTStamp
+        # even though we only want one, iterate in case an mmap gets in there
+        #  to mess us up.  use ssa because we won't finish consuming the iter
+        for instr in self.c.ssa('scan',
+                           map='INSTR_EXEC',
+                           beginTStamp=timestamp, endTStamp=endTStamp,
+                           ranges=[{'start': address, 'length': 1}],
+                           termination='findFirst'):
+            if 'TStamp' in instr and instr['type'] == 'normal':
+                return instr['TStamp']
+        return None
 
     def scanExecution(self, func):
         '''

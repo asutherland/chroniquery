@@ -17,6 +17,7 @@
 
 
 from chronifer import Chronifer
+import chrondis
 
 import optparse, os.path
 
@@ -54,6 +55,8 @@ class Chronisole(object):
         self.functions = soleargs.get('functions', [])
         self.excluded_functions = soleargs.get('excluded_functions', [])
         self.max_depth = soleargs.get('depth', 0)
+        
+        self.dis = chrondis.ChronDis(self.cf._reg_bits)
     
     def run(self):
         if self.action == 'show':
@@ -130,9 +133,11 @@ class Chronisole(object):
                         continue
                     
                     pc = self.cf.getPC(subBeginTStamp)
+                    #self._diss(subBeginTStamp, None, 16, showRelTime=True)
+                    #self._showMem(subBeginTStamp, self.cf.getSP(subBeginTStamp) -32, 64)
                     pout('{fn}%s {.20}{w}%s {.30}{n}%s', subfunc.name,
                          self._formatValue(self.cf.getReturnValue(subEndTStamp, subfunc)),
-                         self._formatParameters(self.cf.getParameters(subBeginTStamp)),
+                         self._formatParameters(self.cf.getParameters(beginTStamp, subfunc)),
                          )
                     pout.i(2)
                     if (not self.max_depth) or depth < self.max_depth:
@@ -144,14 +149,33 @@ class Chronisole(object):
         
         # find all the times the function in question was executed
         for func, beginTStamp in self.cf.scanExecution(func):
-            callInfo = self.cf.findStartOfCall(beginTStamp+1)
+            # okay, we may need to fudge here.  when dealing with a 'main'
+            #  function, its prologue may include some stack manipulation
+            #  track tricks us.  so we use the simple heuristic of scanning
+            #  through the code until we find the opcode that we expect.
+            # 32-bit only for now.
+            if self.cf._reg_bits == 32:
+                fudgeStamp = beginTStamp
+                while fudgeStamp < beginTStamp + 16:
+                    entry_pc   = self.cf.getPC(fudgeStamp)
+                    entry_code = self.cf.readMem(fudgeStamp, entry_pc, 1)
+                    if entry_code == '\x55':
+                        beginTStamp = fudgeStamp
+                        break
+                    fudgeStamp += 1
+            
+            #callInfo = self.cf.findStartOfCall(beginTStamp+1)
             endTStamp = self.cf.findEndOfCall(beginTStamp)
             #print 'BEGIN', beginTStamp, 'BOB', callInfo[0], 'END', endTStamp, 'BOB', callInfo[1]
-            if callInfo:
-                beginTStamp, endTStamp = callInfo[0:2]
-            else:
-                beginTStamp += 1
+            #if callInfo:
+            #    beginTStamp, endTStamp = callInfo[0:2]
+            #else:
+            #    beginTStamp += 1
             #self.dump_stack(beginTStamp)
+            #curfunc = self.cf.findRunningFunction(beginTStamp)
+            #pout('prologue entry: %x end: %x', curfunc.entryPoint, curfunc.prologueEnd)
+            #self._diss(beginTStamp, None, 8, showRelTime=True)
+            
             pout('{fn}%s {.20}{w}%s {.30}{n}%s', func.name,
                  self._formatValue(self.cf.getReturnValue(endTStamp, func)),
                  self._formatParameters(self.cf.getParameters(beginTStamp)),
@@ -160,7 +184,45 @@ class Chronisole(object):
             if self.max_depth != 1:
                 helpy(beginTStamp, endTStamp)
             pout.i(-2)
+    
+    def _diss(self, timestamp, address=None, instructions=1, showRelTime=False):
+        if address is None:
+            address = self.cf.getPC(timestamp)
+        code = self.cf.readMem(timestamp, address, instructions*4)
+        opcodes = self.dis.dis(address, code)
+        for op_addr, op_len, op_dis, op_hex in opcodes[:instructions]:
+            op_reltime = ''
+            if showRelTime:
+                execStamp = self.cf.scanInstructionExecuted(timestamp, op_addr)
+                if execStamp:
+                    op_reltime = '%d' % (execStamp - timestamp)
+                    execSP = self.cf.getSP(execStamp)
+                    op_reltime += ' %x' % execSP
+                    execBP = self.cf.getReg(execStamp, 'ebp')
+                    op_reltime += ' %x' % execBP
+            pout('{s}%x %d {n}%s (%s) {.78}{g}%s', op_addr, op_len, op_dis, op_hex,
+                 op_reltime)
+    
+    def _showMem(self, timestamp, address, size, block_size=16):
+        after_byte = address + size
+        mem = self.cf.readMem(timestamp, address, size)
+        for base in range(address - (address % block_size), after_byte, block_size):
+            if base < address:
+                skip = address % block_size
+                dbytes = ['  '] * skip
+                offset = 0
+            else:
+                skip = 0
+                dbytes = []
+                offset = base - address
+
+            bytes_this_row = min(block_size - skip, after_byte - base)
+            dbytes += ['%02x' % ord(x) for x in mem[offset:offset+bytes_this_row]]
             
+            pout('{s}%x {n}%s', base, ' '.join(dbytes))
+        
+        
+    
     def dump_stack(self, tstamp, pre=8, post=8):
         mappy = {}
         for delta in range(-8, 8):

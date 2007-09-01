@@ -102,7 +102,7 @@ class FlamOut(object):
             if m.group(2) is not None:
                 iarg = state['iarg']
                 if m.group(6) == 'x':
-                    v = hex(args[iarg])
+                    v = '0x%x' % args[iarg]
                 else:
                     v = str(args[iarg])
                 
