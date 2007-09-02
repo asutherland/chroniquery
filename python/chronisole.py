@@ -137,7 +137,7 @@ class Chronisole(object):
                     #self._showMem(subBeginTStamp, self.cf.getSP(subBeginTStamp) -32, 64)
                     pout('{fn}%s {.20}{w}%s {.30}{n}%s', subfunc.name,
                          self._formatValue(self.cf.getReturnValue(subEndTStamp, subfunc)),
-                         self._formatParameters(self.cf.getParameters(beginTStamp, subfunc)),
+                         self._formatParameters(self.cf.getParameters(subBeginTStamp, subfunc)),
                          )
                     pout.i(2)
                     if (not self.max_depth) or depth < self.max_depth:
@@ -190,7 +190,9 @@ class Chronisole(object):
     def _diss(self, timestamp, address=None, instructions=1, showRelTime=False):
         if address is None:
             address = self.cf.getPC(timestamp)
-        code = self.cf.readMem(timestamp, address, instructions*4)
+        # technically, I think 16 is the right number, but that seems rare.
+        MAX_INSTR_SIZE = 8
+        code = self.cf.readMem(timestamp, address, instructions*MAX_INSTR_SIZE)
         opcodes = self.dis.dis(address, code)
         for op_addr, op_len, op_dis, op_hex in opcodes[:instructions]:
             op_reltime = ''
