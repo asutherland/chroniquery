@@ -246,7 +246,7 @@ class Chronisole(object):
     def stop(self):
         self.cf.stop()
 
-def main(args=None):
+def main(args=None, soleclass=Chronisole):
     oparser = optparse.OptionParser()
 
     oparser.add_option('-H', '--html',
@@ -285,7 +285,7 @@ def main(args=None):
         pout = pyflam.FlamHTML(htmlfile, style=opts.style)
         pout.write_html_intro('Chronisole Output')
     
-    cs = Chronisole({'functions': opts.functions,
+    cs = soleclass({'functions': opts.functions,
                      'excluded_functions': opts.excluded_functions,
                      'depth': opts.depth},
                     querylog=opts.log,
