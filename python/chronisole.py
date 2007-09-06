@@ -55,6 +55,8 @@ class Chronisole(object):
         self.functions = soleargs.get('functions', [])
         self.excluded_functions = soleargs.get('excluded_functions', [])
         self.max_depth = soleargs.get('depth', 0)
+        self.flag_dis = soleargs.get('disassemble', False)
+        self.dis_instructions = soleargs.get('instructions', 3)
         
         self.dis = chrondis.ChronDis(self.cf._reg_bits)
     
@@ -120,7 +122,7 @@ class Chronisole(object):
         return ', '.join(str_parts)
     
     def trace_function(self, func):
-        def helpy(beginTStamp, endTStamp, depth=1):
+        def helpy(beginTStamp, endTStamp, depth=2):
             # iterate over the calls found between the given start/end
             #  timestamps, which have been bounded to be inside our parent
             #  function...
@@ -133,7 +135,8 @@ class Chronisole(object):
                         continue
                     
                     pc = self.cf.getPC(subBeginTStamp)
-                    #self._diss(subBeginTStamp, None, 16, showRelTime=True)
+                    if self.flag_dis:
+                        self._diss(subBeginTStamp, None, self.dis_instructions, showRelTime=True)
                     #self._showMem(subBeginTStamp, self.cf.getSP(subBeginTStamp) -32, 64)
                     pout('{fn}%s {.20}{w}%s {.30}{n}%s', subfunc.name,
                          self._formatValue(self.cf.getReturnValue(subEndTStamp, subfunc)),
@@ -176,7 +179,8 @@ class Chronisole(object):
             #self.dump_stack(beginTStamp)
             #curfunc = self.cf.findRunningFunction(beginTStamp)
             #pout('prologue entry: %x end: %x', curfunc.entryPoint, curfunc.prologueEnd)
-            #self._diss(beginTStamp, None, 8, showRelTime=True)
+            if self.flag_dis:
+                self._diss(beginTStamp, None, self.dis_instructions, showRelTime=True)
             
             pout('{fn}%s {.20}{w}%s {.30}{n}%s', func.name,
                  self._formatValue(self.cf.getReturnValue(endTStamp, func)),
@@ -268,6 +272,15 @@ def main(args=None, soleclass=Chronisole):
                        dest='depth', type='int',
                        default=0)
     
+    oparser.add_option('-D', '--disassemble',
+                       action='store_true', dest='disassemble',
+                       default=False,
+                       help='Show disassembly of first -I instructions at entry.')
+    oparser.add_option('-I', '--instruction-count',
+                       dest='instructions', type='int',
+                       default=3,
+                       help='Number of instructions to disassemble when disassembling.')
+    
     oparser.add_option('--log',
                        action='store_true', dest='log', default=False,
                        help='Tell chronicle-query to log /tmp')
@@ -287,7 +300,9 @@ def main(args=None, soleclass=Chronisole):
     
     cs = soleclass({'functions': opts.functions,
                      'excluded_functions': opts.excluded_functions,
-                     'depth': opts.depth},
+                     'depth': opts.depth,
+                     'disassemble': opts.disassemble,
+                     'instructions': opts.instructions},
                     querylog=opts.log,
                     extremeDebug=opts.extremeDebug,
                     *args)

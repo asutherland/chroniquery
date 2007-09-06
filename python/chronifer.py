@@ -219,17 +219,31 @@ class Chronifer(object):
     def scanCallsBetweenTimes(self, beginTStamp, endTStamp):
         sp, thread = self.getRegisters(beginTStamp, self._sp_reg,
                                        self._thread_reg)
+        # find where the stack can grow to (numerically smaller addresses)
         stackLimit = self.findMemoryBegin(beginTStamp, sp)
+        # find where the stack comes from / starts
         stackEnd = self.findMemoryEnd(beginTStamp, sp)
         
         #print 'scanCalls: sp', hex(sp), 'stack limit', hex(stackLimit), 'stack end', hex(stackEnd)
         
         while True:
+            # okay, the idea here is to find the first ENTER_SP invocation that
+            #  happens with a stack address numerically smaller than our current
+            #  stack pointer (aka the stack grows and it's the result of
+            #  something that resembles a call).
+            # Because ranges start numerically low and get bigger, we want to
+            #  start at the 'limit' of the stack (the furthest it can grow), and
+            #  go all the way back up until the last byte before the current
+            #  stack pointer.  (the stack pointer points at a byte that is part
+            #  of the stack)  For arbitrary example, we have a stack that starts
+            #  at 256 decimal (after alignment) and grows down to 4; sp is 128.
+            #  that means we want our range to cover bytes 4-127 inclusive, so
+            #  we do a start of 0 and a length of (sp - start) = 124. 
             cinfo = self.c.sss('scan', map='ENTER_SP', termination='findFirst',
                                beginTStamp=beginTStamp,
                                endTStamp=endTStamp,
                                ranges=[{'start': stackLimit,
-                                        'length': sp - stackLimit - self._ptr_size}])
+                                        'length': sp - stackLimit}])
             
             if cinfo.get('type') == 'normal':
                 subEnterTStamp = cinfo['TStamp']
@@ -303,17 +317,37 @@ class Chronifer(object):
         '''
         # chronomancer bumps memory by 0x10000, so we'll use that too...
         beginAddr = max(0, addr - bump)
+
+        # okay, so I'm not really sure how to make chronicle-query actually
+        #  output the records in the order we want, and it's my bedtime real
+        #  soon, and I just want this to work, so, hack it is.  we just stash
+        #  things that don't help us, and then play things backwards under
+        #  the assumption that they are really just ordered exactly wrong for
+        #  what we want.  This seems like a bad assumption if stacks ever
+        #  decide to grow dynamically, and the O(n^2) generalization of this
+        #  hack is, well, O(n^2).  So, good until it breaks :)
+        # TODO: do the right thing (or at least know the assumptions) for membegin
+        rewind_list = []
         
         mappedBegin = addr
         for minfo in self.c.ssm('scan', map='MEM_MAP',
                                 beginTStamp=0, endTStamp=tstamp,
                                 ranges=[{'start': beginAddr,
                                          'length': addr - beginAddr}],
-                                termination='findLastCover'):
+                                termination='findLastCover',
+                                ):
             if minfo.get('mapped') and (minfo['start'] +
                                         minfo['length']) >= mappedBegin:
                 mappedBegin = min(mappedBegin, minfo['start'])
-        
+            elif minfo.get('mapped'):
+                rewind_list.append(minfo)
+
+        rewind_list.reverse()
+        for minfo in rewind_list:
+            if minfo.get('mapped') and (minfo['start'] +
+                                        minfo['length']) >= mappedBegin:
+                mappedBegin = min(mappedBegin, minfo['start'])
+            
         if mappedBegin <= beginAddr:
             if bump * 2 > 0 and bump * 2 < self._max_long:
                 bump *= 2
