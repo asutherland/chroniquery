@@ -127,12 +127,23 @@ class Chronifer(object):
                 yield self._fabFunction(finfo)
     
     def getRangesUsingExecutableCompilationUnits(self):
+        # dubious ability to handle non-absolute paths for cases where the
+        #  data file is local but the executable was on our path or such.q
+        if '/' in self.exe_file and os.path.exists(self.exe_file):
+            exe_query = self.exe_file
+            exe_test = ''
+        else:
+            exe_query = ''
+            exe_test = '/' + os.path.basename(self.exe_file)
+        
         comp_units = self.c.ssa('lookupCompilationUnits',
-                                debugObjectName=self.exe_file,
+                                debugObjectName=exe_query,
                                 compilationUnitName='')
     
         ranges = []
         for comp_unit in comp_units:
+            if not comp_unit.get('debugObject', '').endswith(exe_test):
+                continue
             cuBegin = comp_unit.get('compilationUnitBegin')
             cuEnd   = comp_unit.get('compilationUnitEnd')
             if cuBegin and cuEnd:

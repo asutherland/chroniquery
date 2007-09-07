@@ -69,24 +69,27 @@ class Chronisole(object):
     def show(self, locals=True):
         ranges = self.cf.getRangesUsingExecutableCompilationUnits()
         
-        last_locals = {}
+        last_locals = locals = {}
         for startStamp, endStamp, sline in self.cf.scanBySourceLine(ranges):
             lines = self.cf.getSourceLines(sline)
             
-            locals = self.cf.getLocals(endStamp+1)
-            
-            locals_sorted = list(locals.keys())
-            locals_sorted.sort()
-            ldisplay = []
-            for lname in locals_sorted:
-                if lname not in last_locals or last_locals[lname] != locals[lname]:
-                    ldisplay.append('{n}%s:{w}%s' % (lname, str(locals[lname])))
-                else:
-                    ldisplay.append('{s}%s:%s' % (lname, str(locals[lname])))
-            ldisplay = ' '.join(ldisplay)
+            if self.show_locals:
+                locals = self.cf.getLocals(endStamp+1)
+                
+                locals_sorted = list(locals.keys())
+                locals_sorted.sort()
+                ldisplay = []
+                for lname in locals_sorted:
+                    if lname not in last_locals or last_locals[lname] != locals[lname]:
+                        ldisplay.append('{n}%s:{w}%s' % (lname, str(locals[lname])))
+                    else:
+                        ldisplay.append('{s}%s:%s' % (lname, str(locals[lname])))
+                ldisplay = ' '.join(ldisplay)
+            else:
+                ldisplay = ''
 
-            callinfo = self.cf.findStartOfCall(startStamp)
-            print callinfo
+            #callinfo = self.cf.findStartOfCall(startStamp)
+            #print callinfo
 
             for line in lines:
                 fmt = '{s}%-10.10s %4d: %s{n}%s{s}%s {.60}' + ldisplay
@@ -100,7 +103,10 @@ class Chronisole(object):
         func_name_to_addr = {}
         for func_name in function_names:
             func = self.cf.lookupGlobalFunction(func_name)
-            self.trace_function(func)
+            if func is None:
+                pout('{e}No such function {n}%s{e}! {s}(skipping)', func_name)
+            else:
+                self.trace_function(func)
             #self.cf.scanEnterSP(1388067, #func.beginTStamp,
             #                    func.endTStamp)
     
@@ -117,7 +123,10 @@ class Chronisole(object):
         str_parts = []
         for label, value in parameters:
             v = self._formatValue(value)
-            str_parts.append('%s: %s' % (label, v))
+            try:
+                str_parts.append('%s: %s' % (label, v))
+            except:
+                str_parts.append('%s: glitch' % label)
     
         return ', '.join(str_parts)
     
@@ -281,6 +290,10 @@ def main(args=None, soleclass=Chronisole):
                        default=3,
                        help='Number of instructions to disassemble when disassembling.')
     
+    oparser.add_option('--no-locals',
+                       action='store_false', dest='show_locals',
+                       default='True')
+    
     oparser.add_option('--log',
                        action='store_true', dest='log', default=False,
                        help='Tell chronicle-query to log /tmp')
@@ -302,7 +315,9 @@ def main(args=None, soleclass=Chronisole):
                      'excluded_functions': opts.excluded_functions,
                      'depth': opts.depth,
                      'disassemble': opts.disassemble,
-                     'instructions': opts.instructions},
+                     'instructions': opts.instructions,
+                     'show_locals': opts.show_locals,
+                     },
                     querylog=opts.log,
                     extremeDebug=opts.extremeDebug,
                     *args)
