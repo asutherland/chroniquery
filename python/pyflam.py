@@ -99,6 +99,9 @@ class FlamOut(object):
     def __call__(self, msg, *args, **kwargs):
         state = {'offset': self._indentLevel, 'iarg': 0}
         def map_helper(m):
+            state['offset'] = state['offset'] + m.start(0) - state.get('lstart',0)
+            state['lstart'] = m.end(0)
+
             if m.group(2) is not None:
                 iarg = state['iarg']
                 if m.group(6) == 'x':
@@ -142,9 +145,6 @@ class FlamOut(object):
                 state['lstart'] = m.end(0)
                 return space
             #print 'delta:', m.start(0) - state.get('lstart',0)
-            state['offset'] = state['offset'] + m.start(0) - state.get('lstart',0)
-            
-            state['lstart'] = m.end(0)
             
             state['needrestore'] = True
             return self._cmap[m.group(1)]
@@ -212,6 +212,9 @@ class FlamOut(object):
     def v(self, msg, *args, **kwargs):
         if self._verbose:
             self(msg, *args, **kwargs)
+            
+    def h(self):
+        self('-' * 40)
 
 class FlamHTML(FlamOut):
     def __init__(self, fout, style=True):
