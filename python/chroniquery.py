@@ -211,9 +211,12 @@ class ChroniQuery(threading.Thread):
         while True:
             cond.wait()
             if rlist is None:
+                # here's an idea, don't deadlock.
+                cond.release()
                 self._reqmap_lock.acquire()
                 rlist = self._resmap[cid]
                 self._reqmap_lock.release()
+                cond.acquire()
             
             while len(rlist):
                 val = rlist[0]
