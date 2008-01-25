@@ -57,6 +57,7 @@ class Chronisole(object):
         self.max_depth = soleargs.get('depth', 0)
         self.flag_dis = soleargs.get('disassemble', False)
         self.dis_instructions = soleargs.get('instructions', 3)
+        self.show_locals = soleargs.get('show_locals', True)
         
         self.dis = chrondis.ChronDis(self.cf._reg_bits)
     
@@ -68,7 +69,7 @@ class Chronisole(object):
         elif self.action == 'mmap':
             self.show_mmap()
     
-    def show(self, locals=True):
+    def show(self):
         ranges = self.cf.getRangesUsingExecutableCompilationUnits()
         
         last_locals = locals = {}

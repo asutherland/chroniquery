@@ -4,6 +4,8 @@ Disassembly helper.
 
 
 class ChronDisNop(object):
+    def __init__(self, bits):
+        pass
     def dis(self, *args, **kwargs):
         return None
 

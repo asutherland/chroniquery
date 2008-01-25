@@ -76,11 +76,13 @@ class Chronifer(object):
             self._ptr_size = 4
             self._reg_bits = 32
             self._max_long = (2 << 32) - 1
+            self._int_sizes = (4,)
         elif self._arch == 'amd64':
             self._sp_reg = 'rsp'
             self._ptr_size = 8
             self._reg_bits = 64
             self._max_long = (2 << 64) - 1
+            self._int_sizes = (4, 8)
         
         self._pc_reg = 'pc'
         self._thread_reg = 'thread'
@@ -91,7 +93,10 @@ class Chronifer(object):
         conversion.
         '''
         #return socket.htonl(int(sval, 16))
-        return struct.unpack('>I', struct.pack('<I', int(sval, 16)))[0]
+        if len(sval) == 8: # 8 hexadecimal string bytes though
+            return struct.unpack('>I', struct.pack('<I', int(sval, 16)))[0]
+        else:
+            return struct.unpack('>Q', struct.pack('<Q', int(sval, 16)))[0]
     
     def _decodeBigInt(self, sval):
         '''
@@ -458,11 +463,11 @@ class Chronifer(object):
                 rstr += dstr
                 maxlength -= probesize
 
-    def readInt(self, tstamp, address):
+    def readInt(self, tstamp, address, byteSize):
         dvalue = self.c.sss('readMem',
                             TStamp=tstamp,
                             ranges=[{'start': address,
-                                     'length': self._ptr_size
+                                     'length': byteSize,
                                     }])
         return self._decodePlatInt(dvalue['bytes'])
 
@@ -505,10 +510,11 @@ class Chronifer(object):
                 if lvalue.get('register'):
                     val = self.getRegister(tstamp, lvalue['register'])
                 elif lvalue.get('address'):
-                    if tinfo.get('byteSize', 4) == 4:
-                        val = self.readInt(tstamp, lvalue['address'])
+                    byteSize = tinfo.get('byteSize', self._ptr_size)
+                    if byteSize in self._int_sizes:
+                        val = self.readInt(tstamp, lvalue['address'], byteSize)
                     else:
-                        val = self.readMem(tstamp, lvalue['address'], tinfo['byteSize']) 
+                        val = self.readMem(tstamp, lvalue['address'], byteSize) 
                 break
             
         if kind == 'pointer':
