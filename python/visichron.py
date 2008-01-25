@@ -165,6 +165,7 @@ class Visichron(csole.Chronisole):
 
         layout = kr.map.Graphviz(nodeId=None,
                                  nodeEdges=kr.map.expr('ever_called'),
+                                 prog='fdp',
                                  #nodeEdges=kr.map.expr('invocations'),
                                  #edgeNode=kr.map.expr('0')
                                  )
@@ -218,7 +219,7 @@ class Visichron(csole.Chronisole):
         context = kr.feed.native(funcs).make_context()
         kr.render.contextualize(context, kr.themes.default)
         
-        WIDTH, HEIGHT = 320, 320 # 640, 640
+        WIDTH, HEIGHT = 1000, 1000 # 640, 640
         model = vis.topRender(context,
                           width=WIDTH, height=HEIGHT,
                           )

@@ -65,6 +65,8 @@ class Chronisole(object):
             self.show()
         elif self.action == 'trace':
             self.trace(self.functions)
+        elif self.action == 'mmap':
+            self.show_mmap()
     
     def show(self, locals=True):
         ranges = self.cf.getRangesUsingExecutableCompilationUnits()
@@ -105,10 +107,17 @@ class Chronisole(object):
             func = self.cf.lookupGlobalFunction(func_name)
             if func is None:
                 pout('{e}No such function {n}%s{e}! {s}(skipping)', func_name)
+                for aname, akind in self.cf.autocomplete(func_name):
+                    pout('   {n}Alternative: {ex}%s {s}(%s)', aname, akind)
             else:
                 self.trace_function(func)
             #self.cf.scanEnterSP(1388067, #func.beginTStamp,
             #                    func.endTStamp)
+            
+    def show_mmap(self):
+        for mmap in self.cf.scanMemMap(self.cf._beginTStamp,
+                                       self.cf._endTStamp):
+            pout.pp(mmap)
     
     def _formatValue(self, value):
         if type(value) == int:
@@ -257,7 +266,10 @@ class Chronisole(object):
                 
             
     def stop(self):
-        self.cf.stop()
+        try:
+            self.cf.stop()
+        except:
+            pass
 
 def main(args=None, soleclass=Chronisole):
     oparser = optparse.OptionParser()

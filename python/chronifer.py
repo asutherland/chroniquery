@@ -126,6 +126,17 @@ class Chronifer(object):
             if 'name' in finfo:
                 yield self._fabFunction(finfo)
     
+    def autocomplete(self, prefix, kind=None):
+        extra = {}
+        if kind:
+            extra['kind'] = kind
+        for ainfo in self.c.ssm('autocomplete',
+                                prefix=prefix,
+                                **extra):
+            if 'name' in ainfo:
+                print ainfo
+                yield ainfo['name'], ainfo['kind']
+    
     def getRangesUsingExecutableCompilationUnits(self):
         # dubious ability to handle non-absolute paths for cases where the
         #  data file is local but the executable was on our path or such.q
@@ -609,6 +620,16 @@ class Chronifer(object):
             else:
                 lines.append((filename, lineno, '', line, ''))
         return lines
+
+    def scanMemMap(self, beginTStamp, endTStamp):
+        # scan all of memory!
+        for mmap in self.c.ssm('scan',
+                                map='MEM_MAP',
+                                beginTStamp=beginTStamp, endTStamp=endTStamp,
+                                ranges=[{'start': 1, 'length': (2 << 32 - 1)}]
+                                ):
+            yield mmap
+        
 
     def scanEnterSP(self, beginTStamp, endTStamp):
         for instr in self.c.ssm('scan',
