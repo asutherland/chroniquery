@@ -23,12 +23,19 @@ class ChroniQuery(threading.Thread):
     NOTICE_COMPLETE  = 0
     NOTICE_STREAMING = 1
     
-    def __init__(self, dbname, querylog=False, extremeDebug=False):
+    def __init__(self, dbname, querylog=False, extremeDebug=False,
+                 debugQuery=False):
+        '''
+        @param querylog: If provided, the name of a file to tell chronicle-query
+            to log to.
+        @param debugQuery: Instructs us to run 'chronicle' against
+            chronicle-query.
+        '''
         threading.Thread.__init__(self)
         
         self.setDaemon(True)
         
-        self._spawn(dbname, querylog=querylog)
+        self._spawn(dbname, querylog=querylog, debugQuery=debugQuery)
         
         # lock for everything before the next blank line
         self._reqmap_lock = threading.Lock()
@@ -46,19 +53,30 @@ class ChroniQuery(threading.Thread):
         
         self.start()
     
-    def _spawn(self, dbname, querylog=False):
+    def _pathfind(self, exename):
+        if os.path.isabs(exename):
+            return exename
+        
+        for part in os.environ['PATH'].split(':'):
+            candidate = os.path.join(part, exename)
+            if os.path.exists(candidate):
+                return candidate
+        
+        raise Exception('Unable to locate "%s" on the path' % exename)
+    
+    def _spawn(self, dbname, querylog=False, debugQuery=False):
         # okay, we need to find chronicle-query on the path, and shell=True
         #  screws us for some reason...
         # broke-ass fallback...
-        exename = 'chronicle-query'
-        for part in os.environ['PATH'].split(':'):
-            candidate = os.path.join(part, 'chronicle-query')
-            if os.path.exists(candidate):
-                exename = candidate
-                break
+        exename = self._pathfind('chronicle-query')
         args = [exename,
                 '--db',
                 dbname]
+        
+        if debugQuery:
+            # user better have a chronicle script on their path
+            args.insert(0, self._pathfind('chronicle'))
+        
         if querylog:
             args.append('--log')
         self.child = subprocess.Popen(args,

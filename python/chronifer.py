@@ -38,7 +38,8 @@ class Chronifer(object):
     basically my __main__ test code re-purposed towards reuse.
     '''
 
-    def __init__(self, exe_file, db_file=None, querylog=False, extremeDebug=False):
+    def __init__(self, exe_file, db_file=None, querylog=False,
+                 extremeDebug=False, debugQuery=False):
         exe_file = os.path.abspath(exe_file)
 
         if db_file is None:
@@ -51,7 +52,8 @@ class Chronifer(object):
         
         self.c = ChroniQuery(self.db_file,
                              querylog=querylog,
-                             extremeDebug=extremeDebug)
+                             extremeDebug=extremeDebug,
+                             debugQuery=debugQuery)
         
         self._startupPrep()
         
@@ -73,12 +75,16 @@ class Chronifer(object):
     def _configureArch(self):
         if self._arch == 'x86':
             self._sp_reg = 'esp'
+            self._bp_reg = 'ebp'
+            self._retval_reg = 'eax'
             self._ptr_size = 4
             self._reg_bits = 32
             self._max_long = (2 << 32) - 1
             self._int_sizes = (4,)
         elif self._arch == 'amd64':
             self._sp_reg = 'rsp'
+            self._bp_reg = 'rbp'
+            self._retval_reg = 'rax'
             self._ptr_size = 8
             self._reg_bits = 64
             self._max_long = (2 << 64) - 1
@@ -144,13 +150,24 @@ class Chronifer(object):
     
     def getRangesUsingExecutableCompilationUnits(self):
         # dubious ability to handle non-absolute paths for cases where the
-        #  data file is local but the executable was on our path or such.q
-        if '/' in self.exe_file and os.path.exists(self.exe_file):
-            exe_query = self.exe_file
-            exe_test = ''
+        #  data file is local but the executable was on our path or such.
+        exe_file = os.path.realpath(self.exe_file)
+        if '/' in exe_file and os.path.exists(exe_file):
+            # er, what if it's a script?
+            f = open(exe_file, 'rb')
+            first_two = f.read(2)
+            f.close()
+            # if it's a script, hope the script has the same name as the
+            #  executable or is a prefix of it...
+            if first_two == '#!':
+                exe_query = ''
+                exe_test = '/' + os.path.basename(exe_file)
+            else:
+                exe_query = exe_file
+                exe_test = ''
         else:
             exe_query = ''
-            exe_test = '/' + os.path.basename(self.exe_file)
+            exe_test = '/' + os.path.basename(exe_file)
         
         comp_units = self.c.ssa('lookupCompilationUnits',
                                 debugObjectName=exe_query,
@@ -251,7 +268,7 @@ class Chronifer(object):
         # find where the stack comes from / starts
         stackEnd = self.findMemoryEnd(beginTStamp, sp)
         
-        #print 'scanCalls: sp', hex(sp), 'stack limit', hex(stackLimit), 'stack end', hex(stackEnd)
+        #print 'scanCalls: sp', hex(sp), 'stack limit', hex(stackLimit), 'stack end', hex(stackEnd), 'length', hex(sp - stackLimit)
         
         while True:
             # okay, the idea here is to find the first ENTER_SP invocation that
@@ -265,13 +282,21 @@ class Chronifer(object):
             #  of the stack)  For arbitrary example, we have a stack that starts
             #  at 256 decimal (after alignment) and grows down to 4; sp is 128.
             #  that means we want our range to cover bytes 4-127 inclusive, so
-            #  we do a start of 0 and a length of (sp - start) = 124. 
-            cinfo = self.c.sss('scan', map='ENTER_SP', termination='findFirst',
+            #  we do a start of 0 and a length of (sp - start) = 124.
+            # NEW ODDNESS: previously, the first guy we saw was the guy we
+            #  wanted; but now we tend to get like 2+ results, in reverse time
+            #  order because we asked for findFirst.
+            cinfs = self.c.ssa('scan', map='ENTER_SP', termination='findFirst',
                                beginTStamp=beginTStamp,
                                endTStamp=endTStamp,
                                ranges=[{'start': stackLimit,
-                                        'length': sp - stackLimit}])
-            
+                                        'length': sp - stackLimit + 8}])
+            #print '---'
+            cinfo = {}
+            for pcinfo in cinfs:
+                #print pcinfo
+                if pcinfo.get('type') == 'normal':
+                    cinfo = pcinfo
             if cinfo.get('type') == 'normal':
                 subEnterTStamp = cinfo['TStamp']
                 subEnterSP = cinfo['start']
@@ -294,6 +319,13 @@ class Chronifer(object):
                     beginTStamp = subEndTStamp + 1
 
                 else:
+                    # er, why not follow?
+#                    yield (subEnterTStamp + 1,
+#                           subEndTStamp,
+#                           subPreCallSP,
+#                           stackEnd, thread)
+#
+#                    print 'Unable to locate function with address %x (%d-%d)' % (pc, subEnterTStamp, subEndTStamp) 
                     #print 'not entry point, skipping'
                     beginTStamp = subEndTStamp + 1
                 
@@ -329,7 +361,7 @@ class Chronifer(object):
         else:
             return None
     
-    def findRunningFunction(self, tstamp, pc=None):
+    def findRunningFunction(self, tstamp, pc=None, unknown_ok=True):
         '''
         Find the function executing at time tstamp.
         '''
@@ -337,6 +369,10 @@ class Chronifer(object):
             pc, = self.getRegisters(tstamp, self._pc_reg)
         finfo = self.c.sss('findContainingFunction', TStamp=tstamp,
                            address=pc)
+        
+        if finfo is None and unknown_ok:
+            pass
+        
         return self._fabFunction(finfo)
     
     def findMemoryBegin(self, tstamp, addr, bump=0x10000):
@@ -476,6 +512,7 @@ class Chronifer(object):
         #print '---'
 
         # although the whole routine still needs a lot more work, this part is horrid.
+        indirections = []
         for tinfo in self.c.ssa('lookupType', typeKey=typeKey):
             kind = tinfo.get('kind')
             if kind == 'pointer':
@@ -483,6 +520,7 @@ class Chronifer(object):
                 stinfo = tinfo
                 subtype = 'unknown'
                 while 'innerTypeKey' in stinfo:
+                    indirections.append(stinfo)
                     for stinfo in self.c.ssa('lookupType', typeKey=stinfo['innerTypeKey']):
                         if 'kind' in stinfo:
                             if stinfo['kind'] == 'pointer':
@@ -514,12 +552,20 @@ class Chronifer(object):
                     if byteSize in self._int_sizes:
                         val = self.readInt(tstamp, lvalue['address'], byteSize)
                     else:
-                        val = self.readMem(tstamp, lvalue['address'], byteSize) 
+                        val = self.readMem(tstamp, lvalue['address'], byteSize)
                 break
-            
+        
         if kind == 'pointer':
-            #print 'deref-ing pointer at 0x%x to 0x%x' % (lvalue['address'], val)
+            # if it's a type we know how to print, pop off the indirections...
             if subtype == 'char':
+                # now pop off the indirections (this does not include the final
+                #  type!), noting that we skip the first indirection, because
+                #  it has already been 'pierced'
+                for indirection in indirections[1:]:
+                    if indirection['kind'] == 'pointer':
+                        byteSize = indirection.get('byteSize', self._ptr_size)
+                        val = self.readInt(tstamp, val, byteSize)
+                
                 val = self.readCString(tstamp, val)
         elif kind == 'int' and typeName == 'bool':
             #print '***boolhex:', hex(ord(val[0])), 'from', lvalue['address']
@@ -588,7 +634,7 @@ class Chronifer(object):
                 #print 'TINFO', tinfo
                 break
 
-        val = self.getRegister(tstamp, 'eax')
+        val = self.getRegister(tstamp, self._retval_reg)
             
         if kind == 'pointer':
             #print 'deref-ing pointer'
@@ -632,7 +678,7 @@ class Chronifer(object):
         for mmap in self.c.ssm('scan',
                                 map='MEM_MAP',
                                 beginTStamp=beginTStamp, endTStamp=endTStamp,
-                                ranges=[{'start': 1, 'length': (2 << 32 - 1)}]
+                                ranges=[{'start': 1, 'length': self._max_long}]
                                 ):
             yield mmap
         
@@ -641,7 +687,7 @@ class Chronifer(object):
         for instr in self.c.ssm('scan',
                                 map='ENTER_SP',
                                 beginTStamp=beginTStamp, endTStamp=endTStamp,
-                                ranges=[{'start': 0, 'length': (2 << 32 - 1)}]):
+                                ranges=[{'start': 0, 'length': self._max_long}]):
             if 'TStamp' in instr and instr.get('type') == 'normal':
                 tstamp = instr['TStamp']
                 func = self.findRunningFunction(tstamp)
@@ -710,7 +756,7 @@ class Chronifer(object):
                 
                 return curline
 
-    def scanBySourceLine(self, ranges):
+    def scanBySourceLine(self, ranges, beginTStamp=None, endTStamp=None):
         '''
         Iterate over the program, yielding on each new source line reached.
         Return a tuple of: (start time stamp, end time stamp, source line info)
@@ -723,14 +769,20 @@ class Chronifer(object):
         source lines via getSourceLines.
         '''
         c = self.c
+        beginTStamp = beginTStamp or self._beginTStamp
+        endTStamp = endTStamp or self._endTStamp
         
         lastline = ('', 0, 0, 0, 0)
+        
+        if len(ranges) == 0:
+            # do not wildcard, or our line cache logic will kill us
+            ranges = None
         
         tstamp = startStamp = lastStamp = None
         for instr in c.ssm('scan',
                            map='INSTR_EXEC',
-                           beginTStamp=self._beginTStamp,
-                           endTStamp=self._endTStamp,
+                           beginTStamp=beginTStamp,
+                           endTStamp=endTStamp,
                            ranges=ranges,
                            ):
 

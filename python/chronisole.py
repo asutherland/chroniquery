@@ -52,12 +52,16 @@ class Chronisole(object):
         self.action = action
         self.cf = Chronifer(*args, **kwargs)
         
+        self.watches_every = []
+        self.watches_by_func = {}
+        
         self.functions = soleargs.get('functions', [])
         self.excluded_functions = soleargs.get('excluded_functions', [])
         self.max_depth = soleargs.get('depth', 0)
         self.flag_dis = soleargs.get('disassemble', False)
         self.dis_instructions = soleargs.get('instructions', 3)
         self.show_locals = soleargs.get('show_locals', True)
+        self.process_watch_defs(soleargs.get('watch_defs', ()))
         
         self.dis = chrondis.ChronDis(self.cf._reg_bits)
     
@@ -69,11 +73,81 @@ class Chronisole(object):
         elif self.action == 'mmap':
             self.show_mmap()
     
-    def show(self):
+    # all this watch stuff is prototyping; generalization/prettification needs
+    #  to follow
+    def process_watch_defs(self, watch_defs):
+        for watch_def in watch_defs:
+            cmd = watch_def[0]
+            args = watch_def[1:].split(':')
+            
+            # before, after function
+            if cmd in ('-', '+', '@'):
+                if cmd == '-':
+                    wfunc = self.watch_before
+                elif cmd == '+':
+                    wfunc = self.watch_after
+                elif cmd =='@':
+                    wfunc = self.watch_range
+                
+                function_name = args[0]
+                action = args[1]
+                args = args[2:]
+                
+                watches = self.watches_by_func.setdefault(function_name, [])
+                watches.append((wfunc, action, args))
+            else:
+                raise Exception("Unknown watch command '%s' for '%s'" % 
+                                (cmd, watch_def))
+                
+    def watch_common_point(self, tstamp, action, args, **kwargs):
+        expr = args[0]
+        if len(args) > 1:
+            expr_len = args[1]
+        else:
+            expr_len = self.cf._ptr_size
+        
+        if expr.startswith('0x'):
+            expr_len = int(expr_len)
+            if expr_len in (4, 8):
+                val = hex(self.cf.readInt(tstamp, int(expr, 16), expr_len))
+            else:
+                val = self.cf.readMem(tstamp, int(expr, 16), int(expr_len))
+            pout('{k}%s{n}: {v}%s', expr, val)
+        elif expr.startswith('*'):
+            # dereference an argument's value...
+            search_varname = expr[1:]
+            ptr_val = None
+            for varname, value in kwargs['parameters']:
+                if varname == search_varname:
+                    ptr_val = value
+                    break
+            if ptr_val is None:
+                print 'unable to find value for %s', search_varname
+                return
+            expr_len = int(expr_len)
+            if expr_len in (4, 8):
+                val = hex(self.cf.readInt(tstamp, ptr_val, expr_len))
+            else:
+                val = self.cf.readMem(tstamp, ptr_val, int(expr_len))            
+            pout('{k}%s{n}: {v}%s', expr, val)
+    
+    def watch_before(self, beginTStamp, endTStamp, action, args, **kwargs):
+        self.watch_common_point(beginTStamp, action, args, **kwargs)
+    
+    def watch_after(self, beginTStamp, endTStamp, action, args, **kwargs):
+        self.watch_common_point(endTStamp, action, args, **kwargs)
+    
+    def watch_range(self, beginTStamp, endTStamp, action, args, **kwargs):
+        if action == 'show':
+            self.show(beginTStamp, endTStamp)
+    
+    def show(self, beginTStamp=None, endTStamp=None, **kwargs):
         ranges = self.cf.getRangesUsingExecutableCompilationUnits()
         
         last_locals = locals = {}
-        for startStamp, endStamp, sline in self.cf.scanBySourceLine(ranges):
+        for startStamp, endStamp, sline in self.cf.scanBySourceLine(ranges,
+                                                                    beginTStamp,
+                                                                    endTStamp):
             lines = self.cf.getSourceLines(sline)
             
             if self.show_locals:
@@ -83,10 +157,15 @@ class Chronisole(object):
                 locals_sorted.sort()
                 ldisplay = []
                 for lname in locals_sorted:
-                    if lname not in last_locals or last_locals[lname] != locals[lname]:
-                        ldisplay.append('{n}%s:{w}%s' % (lname, str(locals[lname])))
+                    lval = locals[lname]
+                    if type(lval) in (int, long):
+                        str_lval = hex(lval)
                     else:
-                        ldisplay.append('{s}%s:%s' % (lname, str(locals[lname])))
+                        str_lval = str(lval)
+                    if lname not in last_locals or last_locals[lname] != locals[lname]:
+                        ldisplay.append('{n}%s:{w}%s' % (lname, str_lval))
+                    else:
+                        ldisplay.append('{s}%s:%s' % (lname, str_lval))
                 ldisplay = ' '.join(ldisplay)
             else:
                 ldisplay = ''
@@ -121,7 +200,7 @@ class Chronisole(object):
             pout.pp(mmap)
     
     def _formatValue(self, value):
-        if type(value) == int:
+        if type(value) in (int, long):
             v = hex(value)
         elif isinstance(value, basestring):
             v = "'%s'" % value
@@ -201,14 +280,24 @@ class Chronisole(object):
             if self.flag_dis:
                 self._diss(beginTStamp, None, self.dis_instructions, showRelTime=True)
             
-            pout('{fn}%s {.20}{w}%s {.30}{n}%s', func.name,
+            parameters = self.cf.getParameters(beginTStamp)
+            pout('{fn}%s {.20}{w}%s {.30}{n}%s',
+                 func.name,
                  self._formatValue(self.cf.getReturnValue(endTStamp, func)),
-                 self._formatParameters(self.cf.getParameters(beginTStamp)),
+                 self._formatParameters(parameters),
                  )
             pout.i(2)
+            self.show_watches(beginTStamp, endTStamp, function=func,
+                              parameters=parameters)
             if self.max_depth != 1:
                 helpy(beginTStamp, endTStamp)
             pout.i(-2)
+    
+    def show_watches(self, beginTStamp, endTStamp, function=None, **kwargs):
+        if function and function.name in self.watches_by_func:
+            watches = self.watches_by_func[function.name]
+            for wfunc, action, args in watches:
+                wfunc(beginTStamp, endTStamp, action, args, **kwargs)
     
     def _diss(self, timestamp, address=None, instructions=1, showRelTime=False):
         if address is None:
@@ -225,9 +314,10 @@ class Chronisole(object):
                     op_reltime = '%d' % (execStamp - timestamp)
                     execSP = self.cf.getSP(execStamp)
                     op_reltime += ' %x' % execSP
-                    execBP = self.cf.getReg(execStamp, 'ebp')
+                    execBP = self.cf.getReg(execStamp, self.cf._bp_reg)
                     op_reltime += ' %x' % execBP
-            pout('{s}%x %d {n}%s (%s) {.78}{g}%s', op_addr, op_len, op_dis, op_hex,
+            pout('{s}%x %d {n}%s (%s) {.78}{g}%s',
+                 op_addr, op_len, op_dis, op_hex,
                  op_reltime)
     
     def _showMem(self, timestamp, address, size, block_size=16):
@@ -307,12 +397,20 @@ def main(args=None, soleclass=Chronisole):
                        action='store_false', dest='show_locals',
                        default='True')
     
+    oparser.add_option('-w', '--watch',
+                       action='append', dest='watches',
+                       default=[])
+    
     oparser.add_option('--log',
                        action='store_true', dest='log', default=False,
                        help='Tell chronicle-query to log /tmp')
     oparser.add_option('-X', '--extreme-debug',
                        action='store_true', dest='extremeDebug', default=False,
                        help='like --log, but on the console and perhaps cooler')
+    oparser.add_option('-Y', '--query-debug',
+                       action='store_true', dest='debugQuery', default=False,
+                       help='Run chronicle against chronicle-query')
+
     
     opts, args = oparser.parse_args(args)
 
@@ -330,9 +428,11 @@ def main(args=None, soleclass=Chronisole):
                      'disassemble': opts.disassemble,
                      'instructions': opts.instructions,
                      'show_locals': opts.show_locals,
+                     'watch_defs': opts.watches,
                      },
                     querylog=opts.log,
                     extremeDebug=opts.extremeDebug,
+                    debugQuery=opts.debugQuery,
                     *args)
     cs.run()
 
