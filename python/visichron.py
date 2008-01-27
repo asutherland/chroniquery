@@ -22,6 +22,10 @@ class VFunc(object):
     def __init__(self, func):
         self.func = func
         self.name = func.name
+        
+        # we intentionally 'double-count' recursive ticks 
+        self.total_ticks = 0
+        
         # invocations lists the times we were invoked.  for each invocation we have:
         #  
         #  start tick - the start time of our invocation
@@ -30,9 +34,10 @@ class VFunc(object):
         #  cflow - what is the summary value of our control flow graph traversal in that function
         #  cfuncs - sub invocations performed
         self.invocations = []
-        self.ever_called = set()
+        self.ever_called = dict()
     
     def invoke(self, stick, etick, call_depth, cflow=0):
+        self.total_ticks += etick - stick
         invocation = [self, stick, etick, call_depth, cflow, []]
         self.invocations.append(invocation)
         return invocation
@@ -42,7 +47,7 @@ class VFunc(object):
     
     def invoc_called(self, invoc, sinvoc):
         invoc[5].append(sinvoc)
-        self.ever_called.add(sinvoc[0])
+        self.ever_called[sinvoc[0]] = self.ever_called.get(sinvoc[0], 0) + 1
         
     def __str__(self):
         return ('function %s' % (self.name)) + (
@@ -143,9 +148,13 @@ class Visichron(csole.Chronisole):
             return sub_invoc_ranges
         
         vfunc = self._get_vfunc(func)
+        minBeginTStamp = self.cf._endTStamp
+        maxEndTStamp = 0
         # find all the times the function in question was executed
         for func, beginTStamp in self.cf.scanExecution(func):
+            minBeginTStamp = min(minBeginTStamp, beginTStamp)
             endTStamp = self.cf.findEndOfCall(beginTStamp)
+            maxEndTStamp = max(maxEndTStamp, endTStamp)
             
             invoc = vfunc.invoke(beginTStamp, endTStamp, 0)
             
@@ -157,6 +166,8 @@ class Visichron(csole.Chronisole):
                                                     sub_invoc_ranges)
             vfunc.update_invoc_cflow(invoc, cflow)
     
+        # normalize all the total time values
+    
         self._vis_funcs(self._vfunc_map.values())
 
     def _vis_funcs(self, funcs):
@@ -164,18 +175,26 @@ class Visichron(csole.Chronisole):
         import math
 
         layout = kr.map.Graphviz(nodeId=None,
-                                 nodeEdges=kr.map.expr('ever_called'),
-                                 prog='fdp',
+                                 nodeEdges=kr.map.expr('ever_called.items()'),
+                                 #prog='fdp',
+                                 prog='neato',
                                  #nodeEdges=kr.map.expr('invocations'),
-                                 #edgeNode=kr.map.expr('0')
+                                 edgeNode=kr.map.expr('0')
                                  )
         
         BLACK = kr.raw.color('black')
         
-        circ = kr.vis.Circle(fill=kr.map.distinct_color(kr.map.expr('name'),
-                                                        s=0.2),
+        circ = kr.vis.Circle(#fill=kr.map.distinct_color(kr.map.expr('name'),
+                             #                           s=0.2),
+                             #fill=kr.raw.rgba(216, 216, 216, 160),
+                             fill=kr.map.hsv(hue=0.0,
+                                             saturation=kr.map.linear(kr.map.expr('total_ticks'),
+                                                                      output_low=0.0,
+                                                                      output_high=1.0),
+                                             value=0.9,
+                                             alpha=0.625),
                              stroke=BLACK, strokeWidth=1,
-                             radius=24,
+                             radius=30,
                              label=kr.map.expr('name'),
                              )
         
@@ -183,19 +202,27 @@ class Visichron(csole.Chronisole):
                                        output_low=-math.pi/2,
                                        output_high=math.pi*3/2) 
         
-        rings = kr.vis.Rings(circ,
+        rings = kr.vis.Rings(vis=circ,
                              data=kr.map.expr('invocations'),
-                             radius=36,
+                             radius=40,
                              thickness=kr.map.linear(kr.map.expr('3'),
                                                      output_low=16,
                                                      output_high=4),
                              startAng=map_time_angle(kr.map.expr('1')),
                              endAng=map_time_angle(kr.map.expr('2')),
-                             fill=kr.map.distinct_color(kr.map.expr('4'),
-                                                        s=0.6, v=0.9),
+                             #fill=kr.map.distinct_color(kr.map.expr('4'),
+                             #                           s=0.6, v=0.9),
+                             fill=kr.map.vary_mapper(kr.map.expr('$node.name'),
+                                                     kr.map.distinct_color,
+                                                     kr.map.expr('4'),
+                                                     s=0.6, v=0.9),
                              #stroke=BLACK,
-                             stroke=kr.map.distinct_color(kr.map.expr('4'),
-                                                        s=0.9, v=0.6),
+                             #stroke=kr.map.distinct_color(kr.map.expr('4'),
+                             #                           s=0.9, v=0.6),
+                             stroke=kr.map.vary_mapper(kr.map.expr('$node.name'),
+                                                     kr.map.distinct_color,
+                                                     kr.map.expr('4'),
+                                                     s=0.9, v=0.6),
                              )
         
         func_vis = rings
@@ -205,12 +232,19 @@ class Visichron(csole.Chronisole):
                               y=layout.y,
                               x=layout.x,
                               nodeVis=func_vis,
-                              lineColor=kr.map.distinct_color(kr.map.expr('name')),
+                              #lineColor=kr.map.distinct_color(kr.map.expr('name')),
                               #lineColor=kr.raw.color('black'),
+                              #lineColor=kr.raw.rgba(0, 0, 128, 32),
+                              lineColor=kr.map.rgba(r=0, g=0, b=128,
+                                                   a=kr.map.linear(
+                                                        kr.map.expr('1'),
+                                                        output_low=16,
+                                                        output_high=128)),
+                              lineWidth=4,
                               nodeId=None,
-                              nodeEdges=kr.map.expr('ever_called'),
+                              nodeEdges=kr.map.expr('ever_called.items()'),
                               #nodeEdges=kr.map.expr('invocations'),
-                              #edgeNode=kr.map.expr('0')
+                              edgeNode=kr.map.expr('0')
                               )
         
         vis = kr.vis.Pad(graph_vis,
@@ -219,7 +253,7 @@ class Visichron(csole.Chronisole):
         context = kr.feed.native(funcs).make_context()
         kr.render.contextualize(context, kr.themes.default)
         
-        WIDTH, HEIGHT = 1000, 1000 # 640, 640
+        WIDTH, HEIGHT = 1000, 1000 # 2000, 2000
         model = vis.topRender(context,
                           width=WIDTH, height=HEIGHT,
                           )

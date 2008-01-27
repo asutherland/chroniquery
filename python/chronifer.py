@@ -145,7 +145,6 @@ class Chronifer(object):
                                 prefix=prefix,
                                 **extra):
             if 'name' in ainfo:
-                print ainfo
                 yield ainfo['name'], ainfo['kind']
     
     def getRangesUsingExecutableCompilationUnits(self):
@@ -290,7 +289,7 @@ class Chronifer(object):
                                beginTStamp=beginTStamp,
                                endTStamp=endTStamp,
                                ranges=[{'start': stackLimit,
-                                        'length': sp - stackLimit + 8}])
+                                        'length': sp - stackLimit}])
             #print '---'
             cinfo = {}
             for pcinfo in cinfs:
@@ -678,7 +677,7 @@ class Chronifer(object):
         for mmap in self.c.ssm('scan',
                                 map='MEM_MAP',
                                 beginTStamp=beginTStamp, endTStamp=endTStamp,
-                                ranges=[{'start': 1, 'length': self._max_long}]
+                                ranges=[{'start': 0, 'length': self._max_long}]
                                 ):
             yield mmap
         
