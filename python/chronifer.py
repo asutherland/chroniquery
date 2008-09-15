@@ -58,6 +58,7 @@ class Chronifer(object):
         self._startupPrep()
         
         self._instrCache = {}
+        self._funcCache = {}
     
     def _startupPrep(self):
         c = self.c
@@ -366,13 +367,24 @@ class Chronifer(object):
         '''
         if pc is None:
             pc, = self.getRegisters(tstamp, self._pc_reg)
-        finfo = self.c.sss('findContainingFunction', TStamp=tstamp,
-                           address=pc)
-        
-        if finfo is None and unknown_ok:
-            pass
-        
-        return self._fabFunction(finfo)
+        func = self._funcCache.get(pc)
+        if func is None:
+            finfo = self.c.sss('findContainingFunction', TStamp=tstamp,
+                               address=pc)
+            if finfo is None and unknown_ok:
+                func = None
+            else:
+                entryPoint = finfo.get('entryPoint')
+                if entryPoint:
+                    if entryPoint in self._funcCache:
+                        func = self._funcCache[entryPoint]
+                    else:
+                        func = self._fabFunction(finfo)
+                        self._funcCache[func.entryPoint] = func
+                else:
+                    func = None
+            self._funcCache[pc] = func
+        return func
     
     def findMemoryBegin(self, tstamp, addr, bump=0x10000):
         '''
