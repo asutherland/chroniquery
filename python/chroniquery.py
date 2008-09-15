@@ -41,10 +41,8 @@ class ChroniQuery(threading.Thread):
         self._reqmap_lock = threading.Lock()
         # request id one-up counter
         self._id = 0
-        # maps requests to conditions for notification
+        # maps requests to notification type (deprecated), notifier, results
         self._reqmap = {}
-        # maps requests to result objects
-        self._resmap = {}
         
         self._async_lock = threading.Lock()
         self._async = []
@@ -106,36 +104,18 @@ class ChroniQuery(threading.Thread):
                 try:
                     self._reqmap_lock.acquire()
                     if oid in self._reqmap:
-                        notice_type, cond = self._reqmap[oid]
+                        notice_type, cond, rlist = self._reqmap[oid]
                     else:
                         continue
                     
-                    if oid in self._resmap or not terminated:
-                        # implies multi
-                        cond.acquire()
-                        
-                        rlist = self._resmap.get(oid)
-                        if rlist is None:
-                            rlist = []
-                            self._resmap[oid] = rlist
-                        
-                        rlist.append(obj)
+                    cond.acquire()
                     
-                        if notice_type == self.NOTICE_STREAMING:
-                            if terminated:
-                                rlist.append(None)
-                            cond.notify()
-                        elif terminated:
-                            cond.notify()
-                        cond.release()
-                        
-                    else:
-                        # one-shot, but everybody loves a list...
-                        self._resmap[oid] = [obj]
-                        
-                        cond.acquire()
-                        cond.notify()
-                        cond.release()
+                    rlist.append(obj)
+                    if terminated:
+                        rlist.append(None)
+                    
+                    cond.notify()
+                    cond.release()
                 finally:
                     self._reqmap_lock.release()
             # Asynchronous, unsolicited.
@@ -163,7 +143,7 @@ class ChroniQuery(threading.Thread):
         if self.child.returncode is not None:
             print 'uh-oh, child is angry!'
         
-        cid, cond = None, None
+        cid, cond, rlist = None, None, []
         # not thread safe, clearly
         try:
             self._reqmap_lock.acquire()
@@ -177,7 +157,7 @@ class ChroniQuery(threading.Thread):
                 notice_type = self.NOTICE_COMPLETE
             
             cond = threading.Condition()
-            self._reqmap[cid] = (notice_type, cond)
+            self._reqmap[cid] = (notice_type, cond, rlist)
         finally:
             self._reqmap_lock.release()
 
@@ -200,49 +180,39 @@ class ChroniQuery(threading.Thread):
             print 'JSON:', json_data
         self.child.stdin.write(json_data + '\n')
         
-        return cid, cond
+        return cid, cond, rlist
     asc = _sendCommand
     
     def syncSendSingle(self, command_name, **kwargs):
-        cid, cond = self._sendCommand(command_name, **kwargs)
+        cid, cond, rlist = self._sendCommand(command_name, **kwargs)
         
         cond.acquire()
-        cond.wait()
+        while len(rlist) == 0 or rlist[-1] != None:
+            cond.wait()
         cond.release()
         
         try:
             self._reqmap_lock.acquire()
-            
-            obj = self._resmap[cid]
-            del self._resmap[cid]
-            
-            return obj[0]
+            del self._reqmap[cid]
+            return rlist[0]
         finally:
             self._reqmap_lock.release()
     sss = syncSendSingle
     
     def syncSendMulti(self, command_name, **kwargs):
-        cid, cond = self._sendCommand(command_name, _stream=True, **kwargs)
+        cid, cond, rlist = self._sendCommand(command_name, _stream=True,
+                                             **kwargs)
         
-        rlist = None
         cond.acquire()
         while True:
-            cond.wait()
-            if rlist is None:
-                # here's an idea, don't deadlock.
-                cond.release()
-                self._reqmap_lock.acquire()
-                rlist = self._resmap[cid]
-                self._reqmap_lock.release()
-                cond.acquire()
-            
+            if not len(rlist):
+                cond.wait()
             while len(rlist):
-                val = rlist[0]
-                del rlist[0]
+                val = rlist.pop(0)
                 cond.release()
                 if val is None:
                     self._reqmap_lock.acquire()
-                    del self._resmap[cid]
+                    del self._reqmap[cid]
                     self._reqmap_lock.release()
                     return
                 yield val
