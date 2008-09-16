@@ -70,6 +70,9 @@ class Chronisole(object):
             self.show()
         elif self.action == 'trace':
             self.trace(self.functions)
+        elif self.action == 'jstrace':
+            self.init_jstrace()
+            self.jstrace()
         elif self.action == 'mmap':
             self.show_mmap()
     
@@ -236,10 +239,11 @@ class Chronisole(object):
                     if self.flag_dis:
                         self._diss(subBeginTStamp, None, self.dis_instructions, showRelTime=True)
                     #self._showMem(subBeginTStamp, self.cf.getSP(subBeginTStamp) -32, 64)
-                    pout('{fn}%s {.20}{w}%s {.30}{n}%s', subfunc.name,
-                         self._formatValue(self.cf.getReturnValue(subEndTStamp, subfunc)),
-                         self._formatParameters(self.cf.getParameters(subBeginTStamp, subfunc)),
-                         )
+                    #pout('{fn}%s {.20}{w}%s {.30}{n}%s', subfunc.name,
+                    #     self._formatValue(self.cf.getReturnValue(subEndTStamp, subfunc)),
+                    #     self._formatParameters(self.cf.getParameters(subBeginTStamp, subfunc)),
+                    #     )
+                    pout('%s', subfunc.name)
                     pout.i(2)
                     if (not self.max_depth) or depth < self.max_depth:
                         helpy(subBeginTStamp, subEndTStamp, depth + 1)
@@ -292,6 +296,135 @@ class Chronisole(object):
             if self.max_depth != 1:
                 helpy(beginTStamp, endTStamp)
             pout.i(-2)
+    
+    def jstrace(self):
+        contexts = {}
+        self._jsFuncCache = {}
+        
+        func = self.cf.lookupGlobalFunction('JS_NewContext')
+        contextPointerType = self.cf.getTypeInfo(func.typeKey)
+        pout('{g}Context Type Pointer Size{n}: %s', contextPointerType.size)
+        contextType = contextPointerType.innerType
+        pout('{g}Context Type: {n}%s', contextType)
+        # note: free typedef piercing.
+        fpField = contextType.getField('fp')
+        fpOffset = fpField.offset
+        fpSize = fpField.size
+        
+        pout('{g}fp {n}offset: %d size: %d', fpOffset, fpSize)
+
+        jsFrameType = fpField.type.innerType.loseTypedef()
+        jsFunField = jsFrameType.getField('fun')
+        self.jsFrameFunOffset = jsFunField.offset
+        self.jsFrameFunSize = jsFunField.size
+        # the field is of course, a pointer
+        jsFunType = jsFunField.type.innerType.loseTypedef()
+        jsFunAtom = jsFunType.getField('atom')
+        self.jsFunAtomOffset = jsFunAtom.offset
+        self.jsFunAtomSize = jsFunAtom.size
+        
+        for func, beginTStamp in self.cf.scanExecution(func):
+            endTStamp = self.cf.findEndOfCall(beginTStamp)
+            context = self.cf.getReturnValue(endTStamp, func)
+            contexts[context] = [endTStamp, None]
+            
+        func = self.cf.lookupGlobalFunction('js_DestroyContext')
+        for func, beginTStamp in self.cf.scanExecution(func):
+            endTStamp = self.cf.findEndOfCall(beginTStamp)
+            params = self.cf.getParameters(beginTStamp, func)
+            context = params[0][1]
+            contexts[context][1] = endTStamp
+            pout('Context: %x: %d-%d', context, contexts[context][0],
+                 contexts[context][1])
+            
+            contextStart, contextEnd = contexts[context]
+            mem_writes = self.cf.findMemoryWrites(contextStart, contextEnd,
+                                                  context + fpOffset,
+                                                  fpSize)
+            
+            stack = []
+            for writeStamp, writeValue in mem_writes:
+                if writeValue == 0:
+                    print 'Null write. Resetting stack.'
+                    stack = []
+                    continue
+                
+                print writeValue, stack
+                # figure out if we're pushing or popping...
+                if writeValue in stack:
+                    idx = stack.index(writeValue)
+                    del stack[idx:]
+                    print 'Pop! Now at', stack
+                else:
+                    stack.append(writeValue)
+                    if writeValue == 0:
+                        print 'Null push, somewhat ignoring...'
+                    else:
+                        print 'Push!', self.js_function_from_frame(writeStamp,
+                                                                   writeValue)
+    
+    def init_jstrace(self):
+        self.jsStringType = self.cf.lookupGlobalType('JSString')
+        print 'JSString:', self.jsStringType
+        self.jsStringLengthOffset = self.jsStringType.getField('length').offset
+        self.jsStringLengthSize = self.jsStringType.getField('length').size
+        uUnionField = self.jsStringType.getField('u')
+        charsPtrField = uUnionField.realType.getField('chars')
+        self.jsStringPointerOffset = uUnionField.offset
+        self.jsStringPointerSize = charsPtrField.size
+    
+    def js_gcthing(self, ptr):
+        return ptr & ~7
+    
+    def js_function_from_frame(self, tstamp, pframe):
+        #print 'pframe %x' % (pframe,)
+        #print 'frame offset %x size %d' % (self.jsFrameFunOffset,
+        #                                   self.jsFrameFunSize)
+        pfun = self.cf.readInt(tstamp, pframe + self.jsFrameFunOffset,
+                               self.jsFrameFunSize)
+        if pfun == 0:
+            return u'no-fun'
+        
+        # tagged atom
+        tatom = self.cf.readInt(tstamp, pfun + self.jsFunAtomOffset,
+                                self.jsFunAtomSize)
+        # real atom pointer become string
+        patom = self.js_gcthing(tatom)
+        if (patom != 0):
+            return self.js_string_read(tstamp, patom)
+        return u'no-fun-atom'
+    
+    def js_string_read(self, tstamp, strAddr):
+        lenFlags = self.cf.readInt(tstamp, strAddr + self.jsStringLengthOffset,
+                                   self.jsStringLengthSize)
+        JS_BITS_PER_WORD = 64
+        JSSTRING_LENGTH_BITS = JS_BITS_PER_WORD - 3
+        JSSTRING_LENGTH_MASK = (1 << JSSTRING_LENGTH_BITS) - 1
+        
+        JSSTRDEP_LENGTH_BITS = JSSTRING_LENGTH_BITS // 2
+        JSSTRDEP_LENGTH_MASK = (1 << JSSTRDEP_LENGTH_BITS) - 1
+        
+        
+        
+        isDep = lenFlags & (1 << (JS_BITS_PER_WORD-1))
+        isPrefix = isMutable = lenFlags & (1 << (JS_BITS_PER_WORD-2))
+        isAtomized = lenFlags & (1 << (JS_BITS_PER_WORD-3))
+        
+        if isDep:
+            raise Exception("This dependent string stuff is crazy. Nuts to you.")
+            if isPrefix:
+                length = lenFlags & JSSTRING_LENGTH_MASK
+            else:
+                length = lenFlags & JSSTRDEP_LENGTH_MASK
+        else:
+            length = lenFlags & JSSTRING_LENGTH_MASK
+        
+        if length:
+            pdata = self.cf.readInt(tstamp, strAddr + self.jsStringPointerOffset,
+                                    self.jsStringPointerSize)
+            return self.cf.readPascalUniString(tstamp, pdata, length)
+        else:
+            return u'no-atom-string'
     
     def show_watches(self, beginTStamp, endTStamp, function=None, **kwargs):
         if function and function.name in self.watches_by_func:

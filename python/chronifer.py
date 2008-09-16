@@ -32,6 +32,115 @@ class FuncInfo(object):
         self.ranges = ranges
         self.prologueEnd = prologueEnd
 
+class TypeInfo(object):
+    def loseTypedef(self):
+        return self
+
+class PointerTypeInfo(TypeInfo):
+    def __init__(self, innerType, size):
+        self.innerType = innerType
+        self.size = size
+    
+    def __str__(self):
+        return '*%s' % (self.innerType,)
+
+class ArrayTypeInfo(TypeInfo):
+    def __init__(self, innerType, length):
+        self.innerType = innerType
+        self.length = length
+    
+    def __str__(self):
+        return '%s[%s]' % (self.innerType, self.length)
+
+class TypedefTypeInfo(TypeInfo):
+    def __init__(self, name, innerType):
+        self.name = name
+        self.innerType = innerType
+    
+    def getField(self, name):
+        return self.innerType.getField(name)
+    
+    def loseTypedef(self):
+        return self.innerType
+    
+    def __str__(self):
+        return 'typedef:%s=%s' % (self.name, self.innerType)
+
+class FieldTypeInfo(TypeInfo):
+    def __init__(self, chronifer, parent, name, offset, size, fieldTypeKey):
+        self.cf = chronifer
+        self.parent = parent
+        self.name = name
+        self.offset = offset
+        self._size = size
+        self.typeKey = fieldTypeKey
+        self.fieldType = None
+    
+    @property
+    def size(self):
+        if self._size:
+            return self._size
+        return self.realType.size
+    
+    @property
+    def type(self):
+        if self.fieldType is None:
+            self.fieldType = self.cf.getTypeInfo(self.typeKey)
+        return self.fieldType
+    
+    @property
+    def realType(self):
+        if self.fieldType is None:
+            self.fieldType = self.cf.getTypeInfo(self.typeKey)
+        return self.fieldType.loseTypedef()
+    
+    def __str__(self):
+        # avoid recursion in display... don't show the type
+        return '%s' % (self.name,)
+
+class StructTypeInfo(TypeInfo):
+    def __init__(self, name, kind):
+        self.name = name
+        self.kind = kind
+        self.fields = []
+        self.fieldsByName = {}
+    
+    def addField(self, field):
+        self.fields.append(field)
+        self.fieldsByName[field.name] = field
+    
+    def getField(self, name):
+        return self.fieldsByName[name]
+    
+    def __str__(self):
+        return '{%s %s %s}' % (self.kind, self.name,
+                               ', '.join(map(str, self.fields)))
+
+class AnnotationTypeInfo(TypeInfo):
+    def __init__(self, annotation, innerType):
+        self.annotation = annotation
+        self.innerType = innerType
+
+    # meh, annotations are stupid, lose them
+    def loseTypedef(self):
+        return self.innerType
+    
+    def __str__(self):
+        return '%s %s' % (self.annotation, self.innerType)
+
+class NativeTypeInfo(TypeInfo):
+    def __init__(self, name, signed, size):
+        self.name = name
+        self.signed = signed
+        self.size = size
+    
+    def __str__(self):
+        return '%s%s%d' % ((self.signed is None) and ' ' or
+                           (self.signed and 'signed' or 'unsigned'),
+                           self.name, self.size)
+
+VoidPointerType = PointerTypeInfo(NativeTypeInfo('void', None, 0), 0)
+
 class Chronifer(object):
     '''
     A highly fluxy higher level wrapper over ChroniQuery.  For now, it's 
@@ -59,6 +168,7 @@ class Chronifer(object):
         
         self._instrCache = {}
         self._funcCache = {}
+        self._typeCache = {}
     
     def _startupPrep(self):
         c = self.c
@@ -100,7 +210,9 @@ class Chronifer(object):
         conversion.
         '''
         #return socket.htonl(int(sval, 16))
-        if len(sval) == 8: # 8 hexadecimal string bytes though
+        if len(sval) == 4:
+            return struct.unpack('>H', struct.pack('<H', int(sval, 16)))[0]
+        elif len(sval) == 8: # 8 hexadecimal string bytes though
             return struct.unpack('>I', struct.pack('<I', int(sval, 16)))[0]
         else:
             return struct.unpack('>Q', struct.pack('<Q', int(sval, 16)))[0]
@@ -386,6 +498,22 @@ class Chronifer(object):
             self._funcCache[pc] = func
         return func
     
+    def findMemoryWrites(self, beginTStamp, endTStamp, beginAddr, memSize=None):
+        '''
+        
+        '''
+        writes = []
+        for minfo in self.c.ssm('scan', map='MEM_WRITE',
+                                beginTStamp=beginTStamp, endTStamp=endTStamp,
+                                ranges=[{'start': beginAddr,
+                                         'length': memSize or this._ptr_size}],
+                                # we want them all, specify no termination
+                                ):
+            if minfo.get('type') == 'normal' and 'TStamp' in minfo:
+                 writes.append((minfo['TStamp'],
+                                self._decodePlatInt(minfo['bytes'])))
+        return writes
+    
     def findMemoryBegin(self, tstamp, addr, bump=0x10000):
         '''
         '''
@@ -470,19 +598,15 @@ class Chronifer(object):
         return self._fabFunction(finfo)
     
     def readMem(self, tstamp, address, length):
-        #print 'REQ LENGTH', length
         dstr = '0' * length
         for dvalue in self.c.ssa('readMem',
                             TStamp=tstamp,
                             ranges=[{'start': address,
                                      'length': length
                                     }]):
-            #print ':::', dvalue
             if 'bytes' in dvalue:
                 offset = (dvalue['start'] - address) * 2
                 length = dvalue['length'] * 2
-                #print 'offset', offset, 'length', length
-                #print len(dstr[:offset]), len(dvalue['bytes']), len(dstr[offset+length:]) 
                 dstr = dstr[:offset] + dvalue['bytes']  + dstr[offset+length:]
         rstr = ''
         for idx in range(0, len(dstr), 2):
@@ -510,7 +634,20 @@ class Chronifer(object):
                 rstr += dstr
                 maxlength -= probesize
 
+    def readPascalUniString(self, tstamp, address, length):
+        '''
+        Read a unicode string of the given length from address.
+        @param length The number of characters in the string.
+        '''
+        dstr = self.readMem(tstamp, address, 2 * length)
+        try:
+            return dstr.decode('utf_16_le')
+        except:
+            return 'corrupt-very-sad'
+
     def readInt(self, tstamp, address, byteSize):
+        if byteSize is None:
+            raise Exception('byteSize has to be a number!')
         dvalue = self.c.sss('readMem',
                             TStamp=tstamp,
                             ranges=[{'start': address,
@@ -618,6 +755,70 @@ class Chronifer(object):
                 
         return locals
 
+    def lookupGlobalType(self, name):
+        infos = self.c.ssa('lookupGlobalType', name=name)
+        tinfo = infos[0]
+        if 'typeKey' in tinfo:
+            return self.getTypeInfo(tinfo['typeKey'])
+        return None
+
+    def getTypeInfo(self, typeKey):
+        if typeKey in self._typeCache:
+            return self._typeCache[typeKey]
+        
+        for tinfo in self.c.ssa('lookupType', typeKey=typeKey):
+            if 'terminated' in tinfo:
+                continue
+            print ':::', tinfo
+            
+            if 'partial' in tinfo:
+                tinfo = self.c.sss('lookupGlobalType', name=tinfo['name'],
+                                   typeKey=typeKey)
+            
+            kind = tinfo.get('kind')
+            if kind == 'annotation':
+                ti = AnnotationTypeInfo(tinfo['annotation'],
+                                        self.getTypeInfo(tinfo['innerTypeKey']))
+            elif kind == 'pointer':
+                if 'innerTypeKey' in tinfo:
+                    ti = PointerTypeInfo(self.getTypeInfo(tinfo['innerTypeKey']),
+                                         tinfo.get('byteSize'))
+                else:
+                    ti = VoidPointerType
+            elif kind == 'typedef':
+                ti = TypedefTypeInfo(tinfo['name'],
+                                     self.getTypeInfo(tinfo['innerTypeKey']))
+            elif kind == 'struct':
+                ti = StructTypeInfo(tinfo.get('name'), tinfo['structKind'])
+                # cache structs immediately since they can be self-recursive
+                self._typeCache[typeKey] = ti
+                for finfo in tinfo.get('fields'):
+                    fi = FieldTypeInfo(self, ti, finfo.get('name'),
+                                       finfo.get('byteOffset'),
+                                       finfo.get('byteSize'),
+                                       finfo['typeKey'])
+                    ti.addField(fi)
+            elif kind == 'array':
+                ti = ArrayTypeInfo(self.getTypeInfo(tinfo['innerTypeKey']),
+                                   tinfo.get('length'))
+            elif kind == 'function':
+                print 'Ignoring function type.'
+                ti = None
+            elif kind in ('int', 'float'):
+                ti = NativeTypeInfo(kind, tinfo.get('signed'),
+                                    tinfo['byteSize'])
+            elif kind == 'enum':
+                ti = None
+            else:
+                ti = None
+                print 'UNKNOWN!', tinfo
+                typeName = tinfo.get('name')
+                #print 'TINFO', tinfo
+                break
+        
+        self._typeCache[typeKey] = ti
+        return ti
+
     def getReturnValue(self, tstamp, func=None):
         if func is None:
             func = self.findRunningFunction(tstamp)
@@ -635,10 +836,9 @@ class Chronifer(object):
                             if stinfo['kind'] == 'pointer':
                                 subtype = 'pp'
                             else:
-                                #print 'SUBINFO', stinfo
                                 subtype = stinfo.get('name', 'unknown')
                 else:
-                    subtype = 'unknown'  
+                    subtype = 'unknown'
                 break
             else:
                 typeName = tinfo.get('name')
