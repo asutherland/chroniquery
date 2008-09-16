@@ -314,14 +314,25 @@ class Chronisole(object):
         pout('{g}fp {n}offset: %d size: %d', fpOffset, fpSize)
 
         jsFrameType = fpField.type.innerType.loseTypedef()
+        # -- get fun info
         jsFunField = jsFrameType.getField('fun')
         self.jsFrameFunOffset = jsFunField.offset
         self.jsFrameFunSize = jsFunField.size
+        # - get fun atom
         # the field is of course, a pointer
         jsFunType = jsFunField.type.innerType.loseTypedef()
         jsFunAtom = jsFunType.getField('atom')
         self.jsFunAtomOffset = jsFunAtom.offset
         self.jsFunAtomSize = jsFunAtom.size
+        
+        # -- get script info
+        jsScriptField = jsFrameType.getField('script')
+        self.jsFrameScriptOffset = jsScriptField.offset
+        self.jsFrameScriptSize = jsScriptField.size
+        jsScriptType = jsScriptField.type.innerType.loseTypedef()
+        jsScriptFilename = jsScriptType.getField('filename')
+        self.jsScriptFilenameOffset = jsScriptFilename.offset
+        self.jsScriptFilenameSize = jsScriptFilename.size
         
         for func, beginTStamp in self.cf.scanExecution(func):
             endTStamp = self.cf.findEndOfCall(beginTStamp)
@@ -346,22 +357,52 @@ class Chronisole(object):
             for writeStamp, writeValue in mem_writes:
                 if writeValue == 0:
                     print 'Null write. Resetting stack.'
+                    pout.i(-2 * len(stack))
                     stack = []
                     continue
                 
-                print writeValue, stack
                 # figure out if we're pushing or popping...
                 if writeValue in stack:
                     idx = stack.index(writeValue)
+                    delta = len(stack) - idx
                     del stack[idx:]
+                    pout.i(-2 * delta)
                     print 'Pop! Now at', stack
                 else:
                     stack.append(writeValue)
                     if writeValue == 0:
                         print 'Null push, somewhat ignoring...'
                     else:
-                        print 'Push!', self.js_function_from_frame(writeStamp,
-                                                                   writeValue)
+                        # figure out what point we're at
+                        func = self.cf.findRunningFunction(writeStamp)
+                        # js_Invoke:
+                        #  top of the func, initial frame.
+                        #  (calls js_Interpret)
+                        #  bottom of the func, pops the frame
+                        # js_Execute:
+                        #  top of the func, initial frame
+                        #  (calls js_Interpret)
+                        #  bottom of the func, pops the frame
+                        # js_Interpret:
+                        #  inline return, pop frame
+                        #  inline call (FUN_INTERP;JSOP_CALL/JSOP_EVAL), push
+                        # --- weird places
+                        # MaybeSetupFrame (jsparse.cpp) called by js_ParseScript
+                        # JS_RestoreFrameChain (jsapi.cpp)
+                        
+                        scriptName = self.js_script_from_frame(writeStamp, writeValue)
+                            
+                        pout('{g}Push {n}from {w}%s{n}, script {fn}%s {n}func {fn}%s{n}',
+                             func and func.name,
+                             scriptName,
+                             self.js_function_from_frame(writeStamp,
+                                                         writeValue))
+                        pout.i(2)
+
+                        if scriptName is None and func.name == 'js_Invoke':
+                            pout('{e}I want to recurse!')
+                            
+
     
     def init_jstrace(self):
         self.jsStringType = self.cf.lookupGlobalType('JSString')
@@ -375,6 +416,18 @@ class Chronisole(object):
     
     def js_gcthing(self, ptr):
         return ptr & ~7
+    
+    def js_script_from_frame(self, tstamp, pframe):
+        pscript = self.cf.readInt(tstamp, pframe + self.jsFrameScriptOffset,
+                                  self.jsFrameScriptSize)
+        if pscript == 0:
+            return None
+        pfilename = self.cf.readInt(tstamp,
+                                    pscript + self.jsScriptFilenameOffset,
+                                    self.jsScriptFilenameSize)
+        if pfilename == 0:
+            return ''
+        return self.cf.readCString(tstamp, pfilename, 1024, 32)
     
     def js_function_from_frame(self, tstamp, pframe):
         #print 'pframe %x' % (pframe,)
