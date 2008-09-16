@@ -598,7 +598,7 @@ class Chronifer(object):
         return self._fabFunction(finfo)
     
     def readMem(self, tstamp, address, length):
-        dstr = '0' * length
+        dstr = '0' * length * 2
         for dvalue in self.c.ssa('readMem',
                             TStamp=tstamp,
                             ranges=[{'start': address,
