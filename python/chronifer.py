@@ -39,8 +39,27 @@ class FuncInfo(object):
         self.ranges = ranges
         self.prologueEnd = prologueEnd
         
+        # we should be passing relativeTo for one of these, probably
         self.compilationUnit = self.cf._evilNormalizePath(compilationUnit)
         self.compilationUnitDir = self.cf._evilNormalizePath(compilationUnitDir)
+        
+        # prefer the compilationUnitDir if present, because it actually knows
+        #  where (some?) headers came from 
+        self.interesting, self.depth, self.boring = self.cf._isComplexInteresting(
+                            self.compilationUnitDir or self.compilationUnit,
+                            self.containerPrefix, self.name)
+        
+        if '<' in self.fullName:
+            #print 'Boring-izing template', self.fullName
+            self.interesting = False
+            self.depth = 0
+            self.boring = True
+
+        if not self.boring:
+            print 'Function', self.fullName, 'idb', self.interesting, self.depth, self.boring
+            print ' Compilation Unit', self.compilationUnit
+            print ' Compilation Dir', self.compilationUnitDir
+
 
 class TypeInfo(object):
     def loseTypedef(self):
@@ -168,20 +187,129 @@ class Chronifer(object):
         
         self.exe_file = exe_file
         self.db_file = db_file
+
+        self.config = ConfigParser.SafeConfigParser()
+        self.config.read(os.path.expanduser('~/.chroniquery.cfg'))
+
+        self._initInterestingLogic()
         
         self.c = ChroniQuery(self.db_file,
                              querylog=querylog,
                              extremeDebug=extremeDebug,
                              debugQuery=debugQuery)
         
-        self.config = ConfigParser.SafeConfigParser()
-        self.config.read(os.path.expanduser('~/.chroniquery.cfg'))
-        
+                
         self._startupPrep()
         
         self._instrCache = {}
         self._funcCache = {}
         self._typeCache = {}
+
+    def _initInterestingLogic(self):
+        self._interestingPaths = {}
+        self._interestingContainers = {}
+        self._interestingFunctions = {}
+        
+        # it would be crazy for everybody to be interesting
+        self._defaultInteresting = False
+        self._defaultDepth = 0
+        
+        def get_values(sect):
+            if self.config.has_option(sect, 'interesting'):
+                interesting = self.config.getboolean(sect, "interesting")
+            else:
+                interesting = None
+            
+            if self.config.has_option(sect, 'depth'):
+                depth = self.config.getint(sect, 'depth')
+            else:
+                depth = interesting and 1 or 0
+            
+            if self.config.has_option(sect, 'boring'):
+                boring = self.config.getboolean(sect, 'boring')
+            else:
+                boring = None
+            
+            # boring implies not interesting, but not boring does not imply
+            #  interesting.
+            if boring:
+                depth = 0
+                interesting = False
+                
+            return (interesting, depth, boring)
+            
+        
+        for section in self.config.sections():
+            if section.startswith('dir@'):
+                dirname = section[4:]
+                if dirname.endswith('/'):
+                    dirname = dirname[:-1]
+                self._interestingPaths[dirname] = get_values(section)
+                #print 'Set', dirname, 'to', self._interestingPaths[dirname]
+                
+            elif section.startswith('class@'):
+                container_name = section[6:] + '::'
+                self._interestingContainers[container_name] = get_values(section)
+            elif section.startswith('func@'):
+                func_name = section[5:]
+                self._interestingFunctions[func_name] = get_values(section)
+    
+    def _isComplexInteresting(self, path, containerPrefix, funcName):
+        interesting = self._defaultInteresting
+        depth = self._defaultDepth
+        boring = False
+        
+        # non-existent paths are inherently boring
+        if path is None:
+            return interesting, depth, boring
+        
+        # paths first
+        cur_path = ''
+        path = os.path.normpath(path)
+        for path_part in path.split('/'): # nuts to windows
+            cur_path = os.path.join(cur_path, path_part)
+            if cur_path in self._interestingPaths:
+                dirInteresting, dirDepth, dirBoring = self._interestingPaths[cur_path]
+                if dirInteresting is not None:
+                    interesting = dirInteresting
+                if dirDepth is not None:
+                    depth = dirDepth
+                if dirBoring is not None:
+                    boring = dirBoring
+        
+        # then containers
+        if containerPrefix in self._interestingContainers:
+            contInteresting, contDepth, contBoring = \
+                    self._interestingContainers[containerPrefix]
+            if contInteresting is not None:
+                interesting = contInteresting
+            if contDepth is not None:
+                depth = contDepth
+            if contBoring is not None:
+                boring = contBoring
+        
+        # then function name
+        if containerPrefix in self._interestingContainers:
+            contInteresting, contDepth, contBoring = \
+                    self._interestingContainers[containerPrefix]
+            if contInteresting is not None:
+                interesting = contInteresting
+            if contDepth is not None:
+                depth = contDepth
+            if contBoring is not None:
+                boring = contBoring
+        
+        if funcName in self._interestingFunctions:
+            funcInteresting, funcDepth, funcBoring = \
+                    self._interestingFunctions[funcName];
+            if funcInteresting is not None:
+                interesting = funcInteresting
+            if funcDepth is not None:
+                depth = funcDepth
+            if funcBoring is not None:
+                boring = funcBoring
+                
+        return interesting, depth, boring
     
     def _evilNormalizePath(self, path, relativeTo=None):
         '''
@@ -208,6 +336,10 @@ class Chronifer(object):
         # this is really the evil part.
         if 'comm-central/' in norm_path:
             norm_path = norm_path[norm_path.rindex('comm-central/')+13:]
+        # (this still counts as the evil part.  in fact, it's more evil.)
+        if norm_path.startswith('obj-'):
+            # strip the objdir off...
+            norm_path = norm_path[norm_path.find('/')+1:]
         return norm_path
     
     def _startupPrep(self):
@@ -436,7 +568,7 @@ class Chronifer(object):
         Basically a one-shot variant of scanCallsBetweenTimes.
         '''
         calls = list(self.scanCallsBetweenTimes(beginTStamp, endTStamp, True))
-        return calls[0]
+        return calls and calls[0] or None
     
     def scanCallsBetweenTimes(self, beginTStamp, endTStamp, oneShot=False):
         sp, thread = self.getRegisters(beginTStamp, self._sp_reg,

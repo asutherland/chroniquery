@@ -241,7 +241,7 @@ class Chronisole(object):
         return ', '.join(str_parts)
     
     def trace_function(self, func, beginTStamp=None, endTStamp=None):
-        def helpy(beginTStamp, endTStamp, depth=2):
+        def helpy(beginTStamp, endTStamp, depth=2, max_depth=None):
             # iterate over the calls found between the given start/end
             #  timestamps, which have been bounded to be inside our parent
             #  function...
@@ -260,17 +260,28 @@ class Chronisole(object):
                 #     self._formatValue(self.cf.getReturnValue(subEndTStamp, subfunc)),
                 #     self._formatParameters(self.cf.getParameters(subBeginTStamp, subfunc)),
                 #     )
+                if subfunc.boring:
+                    continue
+                
                 pout('{s}cpp {cn}%s{fn}%s', subfunc.containerPrefix, subfunc.name)
                 pout.i(2)
-                if (not self.max_depth) or depth < self.max_depth:
-                    helpy(subBeginTStamp, subEndTStamp, depth + 1)
+                
+                rel_max_depth = max(max_depth, depth + subfunc.depth)
+                if (subfunc.interesting or depth < rel_max_depth):
+                    helpy(subBeginTStamp, subEndTStamp, depth + 1, rel_max_depth)
                 #sline = self.cf.getSourceLineInfo(subBeginTStamp)
                 #if sline:
                 #    pout('{s}%s', self.cf.getSourceLines(sline))
                 pout.i(-2)
         
         if beginTStamp:
-            helpy(beginTStamp, endTStamp)
+            if func.boring:
+                return
+            pout('{s}cpp {cn}%s{fn}%s', func.containerPrefix, func.name)
+            if func.interesting:
+                pout.i(2)
+                helpy(beginTStamp, endTStamp)
+                pout.i(-2)
             return
         
         # find all the times the function in question was executed
@@ -290,7 +301,7 @@ class Chronisole(object):
             self.show_watches(beginTStamp, endTStamp, function=func,
                               parameters=parameters)
             if self.max_depth != 1:
-                helpy(beginTStamp, endTStamp)
+                helpy(beginTStamp, endTStamp, self.max_depth)
             pout.i(-2)
     
     def jstrace(self):
@@ -444,9 +455,12 @@ class Chronisole(object):
                                 if tsPreDispatch:
                                     nextCall = self.cf.findNextCall(tsPreDispatch,
                                                                     subEndTStamp)
-                                     
-                                    self.trace_function(*nextCall[0:3])
-                                else:
+                                    if nextCall:
+                                        self.trace_function(*nextCall[0:3])
+                                # QueryInterface gets its own magic path, so
+                                #  there will neverbe a 'thing'
+                                elif (xpcInterface.name != 'nsISupports' and
+                                      xpcMember.name != 'QueryInterface'):
                                     pout('{e}Unable to find thing.{n}')
                             elif subfunc == self.xpcGetterSetter:
                                 tsPreSaarp = self.cf.findExecution(
@@ -467,16 +481,46 @@ class Chronisole(object):
                                      params['argc'] and 'set' or 'get',
                                      xpcInterface.name, xpcMember.name)
                                 pout.i(2)
-                                
+
+                                # - er, this still results in a dispatch!
+                                # this means a dispatch is going to happen.
+                                # we know the pc that will happen before then...
+                                tsPreDispatch = self.cf.findExecution(
+                                    self.invokePreDispatchPC, subBeginTStamp,
+                                    subEndTStamp)
+                                # now that dispatch is the next call!
+                                if tsPreDispatch:
+                                    nextCall = self.cf.findNextCall(tsPreDispatch,
+                                                                    subEndTStamp)
+                                    if nextCall:
+                                        self.trace_function(*nextCall[0:3])
+                                # QueryInterface gets its own magic path, so
+                                #  there will neverbe a 'thing'
+                                elif (xpcInterface.name != 'nsISupports' and
+                                      xpcMember.name != 'QueryInterface'):
+                                    pout('{e}Unable to find thing.{n}')
                             else:
                                 pout('{s}nat {cn}%s{fn}%s',
                                      subfunc.containerPrefix, subfunc.name)
                                 pout.i(2)
+                        elif func.name == 'js_Invoke': # script is not None
+                            jsFuncName = self.js_function_name_from_frame(
+                                             writeStamp, writeValue)
+                            pout('{s}js! {jfn}%s {sn}%s{s}:{ln}%d', jsFuncName,
+                                 script.name, script.line)
+                            pout.i(2)
                         elif func.name == 'js_Interpret':
                             jsFuncName = self.js_function_name_from_frame(
                                              writeStamp, writeValue)
                             pout('{s}js  {jfn}%s {sn}%s{s}:{ln}%d', jsFuncName,
                                  script.name, script.line)
+                            pout.i(2)
+                        elif func.name == 'js_Execute':
+                            if script:
+                                pout('{s}js exec {sn}%s{s}:{ln}%d',
+                                     script.name, script.line)
+                            else:
+                                pout('{e}js exec with no script')
                             pout.i(2)
                         else:
                             pout('{s}??? {w}%s', func.fullName)
