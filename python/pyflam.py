@@ -37,7 +37,8 @@ class FlamOut(object):
     def init_map(self):
         self.map_fg('h', 127)
         # normal
-        self.map_fg('n', 255)
+        self.map_fg('n', 0xf8)
+        self.map_fg('bn', 0xff)
         # error
         self.map_fg('e', 124)
         # warning
@@ -46,10 +47,21 @@ class FlamOut(object):
         self.map_fg('g',  46)
         
         # subtle
-        self.map_fg('s', 238)
+        self.map_fg('s', 0xee)
 
-        # filename
-        self.map_fg('fn', 63)
+        # function-name (or filename, maybe)
+        self.map_fg('fn', 0x4d)
+        # container name/class name
+        self.map_fg('cn', 0x41)
+        
+        # javascript function name
+        self.map_fg('jfn', 0xc9)
+        
+        # interface name
+        self.map_fg('in', 0x49)
+        
+        # script name
+        self.map_fg('sn', 0x35)
 
         # example
         self.map_fg('ex', 81)

@@ -19,18 +19,28 @@ from chroniquery import ChroniQuery
 import socket, linecache, os.path, math, struct, ConfigParser
 
 class FuncInfo(object):
-    def __init__(self, cf, name, entryPoint, typeKey,
+    def __init__(self, cf, name, containerPrefix,
+                 entryPoint, typeKey,
                  beginTStamp, endTStamp,
                  ranges,
-                 prologueEnd=None):
+                 prologueEnd=None,
+                 compilationUnit=None, compilationUnitDir=None):
         self.cf = cf
+        
         self.name = name
+        self.containerPrefix = containerPrefix or ''
+        self.fullName = self.containerPrefix + self.name
+         
         self.entryPoint = entryPoint
         self.typeKey = typeKey
+        
         self.beginTStamp = beginTStamp
         self.endTStamp = endTStamp
         self.ranges = ranges
         self.prologueEnd = prologueEnd
+        
+        self.compilationUnit = compilationUnit
+        self.compilationUnitDir = compilationUnitDir
 
 class TypeInfo(object):
     def loseTypedef(self):
@@ -234,17 +244,21 @@ class Chronifer(object):
         
         func = FuncInfo(self,
                         finfo['name'],
+                        finfo.get('containerPrefix'),
                         finfo['entryPoint'],
                         finfo.get('typeKey'),
                         finfo['beginTStamp'],
                         finfo['endTStamp'],
                         finfo.get('ranges'),
-                        finfo.get('prologueEnd'))
+                        finfo.get('prologueEnd'),
+                        finfo.get('compilationUnit'),
+                        finfo.get('compilationUnitDir'),
+                        )
         return func
     
     def _fabAnonFunction(self, pc):
         func = FuncInfo(self,
-                        'Anon:%x' % pc,
+                        'Anon:%x' % pc, None,
                         pc,
                         None, None, None, None, None)
         return func
@@ -871,6 +885,7 @@ class Chronifer(object):
                 ti = None
             elif kind is None and 'progress' in tinfo:
                 # ignore things that are just about progress
+                ti = None
                 continue
             else:
                 ti = None

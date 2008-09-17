@@ -48,6 +48,12 @@ class XPCInterfaceInfo(object):
         self.name = name
         self.ptr = ptr
 
+class XPCMemberInfo(object):
+    def __init__(self, name, ptr, iface):
+        self.name = name
+        self.ptr = ptr
+        self.iface = iface
+
 class Chronisole(object):
     '''
     A console, command line, or at least batch processing interface to
@@ -249,7 +255,7 @@ class Chronisole(object):
                 #     self._formatValue(self.cf.getReturnValue(subEndTStamp, subfunc)),
                 #     self._formatParameters(self.cf.getParameters(subBeginTStamp, subfunc)),
                 #     )
-                pout('{fn}%s', subfunc.name)
+                pout('{s}cpp {cn}%s{fn}%s', subfunc.containerPrefix, subfunc.name)
                 pout.i(2)
                 if (not self.max_depth) or depth < self.max_depth:
                     helpy(subBeginTStamp, subEndTStamp, depth + 1)
@@ -360,8 +366,8 @@ class Chronisole(object):
                     delta = len(stack) - idx - 1
                     del stack[idx+1:]
                     pout.i(-2 * delta)
-                    pout('{s}Pop! by {w}%s {s}Now at: {n}%s',
-                         func.name, map(hex, stack))
+                    #pout('{s}Pop! by {w}%s {s}Now at: {n}%s',
+                    #     func.name, map(hex, stack))
                 else:
                     # it could be some form of replacement or something.
                     # check fp->down for more info
@@ -397,13 +403,6 @@ class Chronisole(object):
                         
                         scriptName = self.js_script_from_frame(writeStamp, writeValue)
                             
-                        pout('{g}Push {n}from {w}%s{n}, script {fn}%s {n}func {fn}%s{n}',
-                             func and func.name,
-                             scriptName,
-                             self.js_function_from_frame(writeStamp,
-                                                         writeValue))
-                        pout.i(2)
-
                         if scriptName is None and func.name == 'js_Invoke':
                             (subfunc, subBeginTStamp, subEndTStamp, subPreCallSP,
                              subStackEnd, thread) = self.cf.findNextCall(
@@ -419,8 +418,14 @@ class Chronisole(object):
                                 pInterface = locals['iface']
                                 xpcInterface = self.xpc_get_interface(
                                     tsPreSetCallInfo, pInterface)
+                                pMember = locals['member']
+                                xpcMember = self.xpc_get_member(
+                                    tsPreSetCallInfo, pMember, xpcInterface)
                                 
-                                pout('{e}XPC Call {n}%s...', xpcInterface.name)
+                                pout('{s}xpc {in}%s{s}::{fn}%s{n}',
+                                     xpcInterface.name, xpcMember.name)
+                                pout.i(2)
+
                                 # this means a dispatch is going to happen.
                                 # we know the pc that will happen before then...
                                 tsPreDispatch = self.cf.findExecution(
@@ -434,12 +439,19 @@ class Chronisole(object):
                                     self.trace_function(*nextCall[0:3])
                                 else:
                                     pout('{e}Unable to find thing.{n}')
-                            elif subfunc:
-                                pout('{e}Call {n}%s.', subfunc.name)
                             else:
-                                pout('{e}I wanted to recurse!')
-                            
-
+                                pout('{s}nat {cn}%s{fn}%s',
+                                     subfunc.containerPrefix, subfunc.name)
+                                pout.i(2)
+                        elif func.name == 'js_Interpret':
+                            jsFuncName = self.js_function_name_from_frame(
+                                             writeStamp, writeValue)
+                            pout('{s}js  {jfn}%s {sn}%s', jsFuncName,
+                                 scriptName)
+                            pout.i(2)
+                        else:
+                            pout('{s}??? {w}%s', func.fullName)
+                            pout.i(2)
     
     def init_jstrace(self):
         # -- JSString support
@@ -500,7 +512,7 @@ class Chronisole(object):
             return ''
         return self.cf.readCString(tstamp, pfilename, 1024, 32)
     
-    def js_function_from_frame(self, tstamp, pframe):
+    def js_function_name_from_frame(self, tstamp, pframe):
         #print 'pframe %x' % (pframe,)
         #print 'frame offset %x size %d' % (self.jsFrameFunOffset,
         #                                   self.jsFrameFunSize)
@@ -552,10 +564,15 @@ class Chronisole(object):
     
     def init_xpc(self):
         self._xpcInterfaceCache = {}
+        self._xpcMemberCache = {}
         
         xpcInterfaceType = self.cf.lookupGlobalType('XPCNativeInterface')
         xpcInterfaceType = xpcInterfaceType.loseTypedef()
         self.xpcInterfaceNameField = xpcInterfaceType.getField('mName')
+        
+        xpcMemberType = self.cf.lookupGlobalType('XPCNativeMember')
+        xpcMemberType = xpcMemberType.loseTypedef()
+        self.xpcMemberNameField = xpcMemberType.getField('mName')
     
     def xpc_get_interface(self, tstamp, pNativeInterface):
         if pNativeInterface in self._xpcInterfaceCache:
@@ -570,6 +587,21 @@ class Chronisole(object):
         xpcInterface = XPCInterfaceInfo(interfaceName, pNativeInterface)
         self._xpcInterfaceCache[pNativeInterface] = xpcInterface
         return xpcInterface
+
+    def xpc_get_member(self, tstamp, pNativeMember, xpcIface):
+        if pNativeMember in self._xpcMemberCache:
+            return self._xpcMemberCache[pNativeMember]
+        
+        pMemberName = self.cf.readInt(tstamp,
+            pNativeMember + self.xpcMemberNameField.offset,
+            self.xpcMemberNameField.size)
+        memberName = self.js_string_read(tstamp,
+            self.js_gcthing(pMemberName))
+        
+        xpcMember = XPCMemberInfo(memberName, pNativeMember, xpcIface)
+        self._xpcMemberCache[pNativeMember] = xpcMember
+        return xpcMember
+
     
     def show_watches(self, beginTStamp, endTStamp, function=None, **kwargs):
         if function and function.name in self.watches_by_func:
