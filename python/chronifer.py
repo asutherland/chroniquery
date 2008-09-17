@@ -39,8 +39,8 @@ class FuncInfo(object):
         self.ranges = ranges
         self.prologueEnd = prologueEnd
         
-        self.compilationUnit = compilationUnit
-        self.compilationUnitDir = compilationUnitDir
+        self.compilationUnit = self.cf._evilNormalizePath(compilationUnit)
+        self.compilationUnitDir = self.cf._evilNormalizePath(compilationUnitDir)
 
 class TypeInfo(object):
     def loseTypedef(self):
@@ -182,6 +182,33 @@ class Chronifer(object):
         self._instrCache = {}
         self._funcCache = {}
         self._typeCache = {}
+    
+    def _evilNormalizePath(self, path, relativeTo=None):
+        '''
+        I am evil because this logic has hard-coding in it.  Pragmatic, but
+        evil.  Pragevil?  Sounds like some form of pill.
+        '''
+        if path is None:
+            return path
+        
+        # absolute we can work with...
+        if os.path.isabs(path):
+            norm_path = os.path.normpath(path)
+        elif relativeTo:
+            norm_path = os.path.normpath(os.path.join(relativeTo, path))
+            os.path.abspath(path)
+        else: 
+            # I'm sure there's a way to find the base directory, but I don't
+            #  really care right now.
+            # XXX find the base directory and use that as a relative basis
+            # let's just strip off any preceding '../' stuff
+            while path.startswith('../'):
+                path = path[3:]
+            norm_path = os.path.normpath(path)
+        # this is really the evil part.
+        if 'comm-central/' in norm_path:
+            norm_path = norm_path[norm_path.rindex('comm-central/')+13:]
+        return norm_path
     
     def _startupPrep(self):
         c = self.c

@@ -62,6 +62,8 @@ class FlamOut(object):
         
         # script name
         self.map_fg('sn', 0x35)
+        # line number
+        self.map_fg('ln', 0x34)
 
         # example
         self.map_fg('ex', 81)

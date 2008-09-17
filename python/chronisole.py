@@ -43,6 +43,11 @@ except:
     pout = pout()
 
 # this will need to move elsewhere, of course
+class JSScriptInfo(object):
+    def __init__(self, name, line):
+        self.name = name
+        self.line = line
+
 class XPCInterfaceInfo(object):
     def __init__(self, name, ptr):
         self.name = name
@@ -317,13 +322,17 @@ class Chronisole(object):
         self.jsFunAtomSize = jsFunAtom.size
         
         # -- get script info
+        # - script field
         jsScriptField = jsFrameType.getField('script')
         self.jsFrameScriptOffset = jsScriptField.offset
         self.jsFrameScriptSize = jsScriptField.size
         jsScriptType = jsScriptField.type.innerType.loseTypedef()
+        # - script filename
         jsScriptFilename = jsScriptType.getField('filename')
         self.jsScriptFilenameOffset = jsScriptFilename.offset
         self.jsScriptFilenameSize = jsScriptFilename.size
+        # - script line
+        self.jsScriptLine = jsScriptType.getField('lineno')
         
         # -- get down frame info
         jsDownField = jsFrameType.getField('down')
@@ -401,9 +410,9 @@ class Chronisole(object):
                         # MaybeSetupFrame (jsparse.cpp) called by js_ParseScript
                         # JS_RestoreFrameChain (jsapi.cpp)
                         
-                        scriptName = self.js_script_from_frame(writeStamp, writeValue)
+                        script = self.js_script_from_frame(writeStamp, writeValue)
                             
-                        if scriptName is None and func.name == 'js_Invoke':
+                        if script is None and func.name == 'js_Invoke':
                             (subfunc, subBeginTStamp, subEndTStamp, subPreCallSP,
                              subStackEnd, thread) = self.cf.findNextCall(
                                 writeStamp, endTStamp)
@@ -446,14 +455,16 @@ class Chronisole(object):
                         elif func.name == 'js_Interpret':
                             jsFuncName = self.js_function_name_from_frame(
                                              writeStamp, writeValue)
-                            pout('{s}js  {jfn}%s {sn}%s', jsFuncName,
-                                 scriptName)
+                            pout('{s}js  {jfn}%s {sn}%s{s}:{ln}%d', jsFuncName,
+                                 script.name, script.line)
                             pout.i(2)
                         else:
                             pout('{s}??? {w}%s', func.fullName)
                             pout.i(2)
     
     def init_jstrace(self):
+        self._jsScriptCache = {}
+        
         # -- JSString support
         self.jsStringType = self.cf.lookupGlobalType('JSString')
         self.jsStringLengthOffset = self.jsStringType.getField('length').offset
@@ -505,12 +516,24 @@ class Chronisole(object):
                                   self.jsFrameScriptSize)
         if pscript == 0:
             return None
+        if pscript in self._jsScriptCache:
+            return self._jsScriptCache[pscript]
+        
         pfilename = self.cf.readInt(tstamp,
                                     pscript + self.jsScriptFilenameOffset,
                                     self.jsScriptFilenameSize)
         if pfilename == 0:
             return ''
-        return self.cf.readCString(tstamp, pfilename, 1024, 32)
+        script_name = self.cf.readCString(tstamp, pfilename, 1024, 32)
+        script_name = self.cf._evilNormalizePath(script_name)
+        
+        script_line = self.cf.readInt(tstamp,
+                                      pscript + self.jsScriptLine.offset,
+                                      self.jsScriptLine.size)
+        
+        script = JSScriptInfo(script_name, script_line)
+        self._jsScriptCache[pscript] = script
+        return script
     
     def js_function_name_from_frame(self, tstamp, pframe):
         #print 'pframe %x' % (pframe,)
