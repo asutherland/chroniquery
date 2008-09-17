@@ -16,7 +16,7 @@
 
 from chroniquery import ChroniQuery
 
-import socket, linecache, os.path, math, struct
+import socket, linecache, os.path, math, struct, ConfigParser
 
 class FuncInfo(object):
     def __init__(self, cf, name, entryPoint, typeKey,
@@ -61,7 +61,7 @@ class TypedefTypeInfo(TypeInfo):
         return self.innerType.getField(name)
     
     def loseTypedef(self):
-        return self.innerType
+        return self.innerType.loseTypedef()
     
     def __str__(self):
         return 'typedef:%s=%s' % (self.name, self.innerType)
@@ -164,6 +164,9 @@ class Chronifer(object):
                              extremeDebug=extremeDebug,
                              debugQuery=debugQuery)
         
+        self.config = ConfigParser.SafeConfigParser()
+        self.config.read(os.path.expanduser('~/.chroniquery.cfg'))
+        
         self._startupPrep()
         
         self._instrCache = {}
@@ -239,16 +242,31 @@ class Chronifer(object):
                         finfo.get('prologueEnd'))
         return func
     
+    def _fabAnonFunction(self, pc):
+        func = FuncInfo(self,
+                        'Anon:%x' % pc,
+                        pc,
+                        None, None, None, None, None)
+        return func
+    
     def lookupGlobalFunction(self, func_name):
         finfo = self.c.sss('lookupGlobalFunctions',
                            name=func_name)
-        return self._fabFunction(finfo)
+        if finfo:
+            func = self._fabFunction(finfo)
+            if func and func.entryPoint:
+              self._funcCache[func.entryPoint] = func
+            return func
+        return None
     
     def lookupGlobalFunctions(self, func_pattern):
         for finfo in self.c.ssm('lookupGlobalFunctions',
                                 name=func_pattern):
             if 'name' in finfo:
-                yield self._fabFunction(finfo)
+                func = self._fabFunction(finfo)
+                if func and func.entryPoint:
+                    self._funcCache[func.entryPoint] = func
+                yield func
     
     def autocomplete(self, prefix, kind=None):
         extra = {}
@@ -372,7 +390,14 @@ class Chronifer(object):
                 
         return None
     
-    def scanCallsBetweenTimes(self, beginTStamp, endTStamp):
+    def findNextCall(self, beginTStamp, endTStamp):
+        '''
+        Basically a one-shot variant of scanCallsBetweenTimes.
+        '''
+        calls = list(self.scanCallsBetweenTimes(beginTStamp, endTStamp, True))
+        return calls[0]
+    
+    def scanCallsBetweenTimes(self, beginTStamp, endTStamp, oneShot=False):
         sp, thread = self.getRegisters(beginTStamp, self._sp_reg,
                                        self._thread_reg)
         # find where the stack can grow to (numerically smaller addresses)
@@ -382,7 +407,10 @@ class Chronifer(object):
         
         #print 'scanCalls: sp', hex(sp), 'stack limit', hex(stackLimit), 'stack end', hex(stackEnd), 'length', hex(sp - stackLimit)
         
-        while True:
+        firstTime = True
+        while not oneShot or firstTime:
+            firstTime = False
+            
             # okay, the idea here is to find the first ENTER_SP invocation that
             #  happens with a stack address numerically smaller than our current
             #  stack pointer (aka the stack grows and it's the result of
@@ -416,12 +444,21 @@ class Chronifer(object):
                 subEndTStamp = self._findEndOfCallWithRegs(subEnterTStamp + 1,
                                                            subEnterSP,
                                                            thread)
-                
+                # we have the very real potential to be happening upon a
+                #  trampoline.  I love trampolines as much as the next guy, but
+                #  this vaguely screws up my analysis.  so, let's just see if
+                #  the pc one time-stamp after our real point is someplace
+                #  else that's crazy.  in such a case, let us use that pc.
                 pc = self.getPC(subEnterTStamp+1)
+                paranoia_pc = self.getPC(subEnterTStamp+2)
+                if abs(paranoia_pc - pc) > 128:
+                    subEnterTStamp += 1
+                    pc = paranoia_pc
                 func = self.findRunningFunction(subEnterTStamp+1, pc)
                 
                 if func and pc == func.entryPoint:
-                    yield (subEnterTStamp + 1,
+                    yield (func,
+                           subEnterTStamp + 1,
                            subEndTStamp,
                            subPreCallSP,
                            stackEnd, thread)
@@ -437,7 +474,7 @@ class Chronifer(object):
 #                           subPreCallSP,
 #                           stackEnd, thread)
 #
-#                    print 'Unable to locate function with address %x (%d-%d)' % (pc, subEnterTStamp, subEndTStamp) 
+                    print 'Unable to locate function with address %x (%d-%d)' % (pc, subEnterTStamp, subEndTStamp) 
                     #print 'not entry point, skipping'
                     beginTStamp = subEndTStamp + 1
                 
@@ -483,18 +520,15 @@ class Chronifer(object):
         if func is None:
             finfo = self.c.sss('findContainingFunction', TStamp=tstamp,
                                address=pc)
-            if finfo is None and unknown_ok:
-                func = None
-            else:
-                entryPoint = finfo.get('entryPoint')
-                if entryPoint:
-                    if entryPoint in self._funcCache:
-                        func = self._funcCache[entryPoint]
-                    else:
-                        func = self._fabFunction(finfo)
-                        self._funcCache[func.entryPoint] = func
+            if finfo is not None and 'entryPoint' in finfo:
+                entryPoint = finfo['entryPoint']
+                if entryPoint in self._funcCache:
+                    func = self._funcCache[entryPoint]
                 else:
-                    func = None
+                    func = self._fabFunction(finfo)
+                    self._funcCache[func.entryPoint] = func
+            else:
+                func = self._fabAnonFunction(pc)
             self._funcCache[pc] = func
         return func
     
@@ -506,7 +540,7 @@ class Chronifer(object):
         for minfo in self.c.ssm('scan', map='MEM_WRITE',
                                 beginTStamp=beginTStamp, endTStamp=endTStamp,
                                 ranges=[{'start': beginAddr,
-                                         'length': memSize or this._ptr_size}],
+                                         'length': memSize or self._ptr_size}],
                                 # we want them all, specify no termination
                                 ):
             if minfo.get('type') == 'normal' and 'TStamp' in minfo:
@@ -590,6 +624,33 @@ class Chronifer(object):
             return self.findMemoryEnd(tstamp, mappedEnd-1, bump)
         
         return mappedEnd
+    
+    def findCallerPC(self, tstamp, pc=None):
+        '''
+        Given a call that begins at tstamp, find the last PC of the caller
+        before control was transferred.  The potential 'gotcha' that this
+        method attempts to address are trampolines.
+        '''
+        # for now, we are arguably very stupid and we just keep running the
+        #  time-stamp backwards until we see a large jump that is not followed
+        #  by another large jump
+        # this should nicely handle tstamp being in the middle of a prolog too
+        if pc is None:
+            pc = self.getPC(tstamp)
+        pc_delta = 0
+        # keep going until we see the big jump 
+        while pc_delta < 16:
+            tstamp -= 1
+            prev_pc = self.getPC(tstamp)
+            pc_delta = abs(prev_pc - pc)
+            pc = prev_pc
+        # stop once we no longer see a big jump
+        while pc_delta >= 16:
+            pc = prev_pc
+            tstamp -= 1
+            prev_pc = self.getPC(tstamp)
+            pc_delta = abs(prev_pc - pc)
+        return (tstamp + 1, pc)
     
     def findContainingFunction(self, tstamp, addr):
         finfo = self.c.sss('findContainingFunction',
@@ -769,7 +830,6 @@ class Chronifer(object):
         for tinfo in self.c.ssa('lookupType', typeKey=typeKey):
             if 'terminated' in tinfo:
                 continue
-            print ':::', tinfo
             
             if 'partial' in tinfo:
                 tinfo = self.c.sss('lookupGlobalType', name=tinfo['name'],
@@ -809,12 +869,14 @@ class Chronifer(object):
                                     tinfo['byteSize'])
             elif kind == 'enum':
                 ti = None
+            elif kind is None and 'progress' in tinfo:
+                # ignore things that are just about progress
+                continue
             else:
                 ti = None
                 print 'UNKNOWN!', tinfo
                 typeName = tinfo.get('name')
                 #print 'TINFO', tinfo
-                break
         
         self._typeCache[typeKey] = ti
         return ti
@@ -924,12 +986,30 @@ class Chronifer(object):
                 return instr['TStamp']
         return None
 
+    def findExecution(self, func_or_pc, beginTStamp=None, endTStamp=None):
+        if isinstance(func_or_pc, FuncInfo):
+            pc = func_or_pc.entryPoint
+        else:
+            pc = func_or_pc
+        
+        for instr in self.c.ssa('scan', map='INSTR_EXEC',
+                           # let's avoid the mmap event entirely
+                           beginTStamp=beginTStamp or func_or_pc.beginTStamp+1,
+                           endTStamp=endTStamp or func_or_pc.endTStamp,
+                           ranges=[{'start': pc, 'length': 1}],
+                           termination='findFirst',
+                           ):
+            if instr and 'TStamp' in instr and instr['type'] == 'normal':
+                return instr['TStamp']
+        return None
+
     def scanExecution(self, func):
         '''
         '''
         for instr in self.c.ssm('scan',
                            map='INSTR_EXEC',
-                           beginTStamp=func.beginTStamp, endTStamp=func.endTStamp,
+                           beginTStamp=func.beginTStamp,
+                           endTStamp=func.endTStamp,
                            ranges=[{'start': func.entryPoint, 'length': 1}],
                            # no termination
                            ):

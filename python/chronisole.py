@@ -42,6 +42,12 @@ except:
             return self.nullfunc
     pout = pout()
 
+# this will need to move elsewhere, of course
+class XPCInterfaceInfo(object):
+    def __init__(self, name, ptr):
+        self.name = name
+        self.ptr = ptr
+
 class Chronisole(object):
     '''
     A console, command line, or at least batch processing interface to
@@ -71,6 +77,7 @@ class Chronisole(object):
         elif self.action == 'trace':
             self.trace(self.functions)
         elif self.action == 'jstrace':
+            self.init_xpc()
             self.init_jstrace()
             self.jstrace()
         elif self.action == 'mmap':
@@ -222,65 +229,43 @@ class Chronisole(object):
     
         return ', '.join(str_parts)
     
-    def trace_function(self, func):
+    def trace_function(self, func, beginTStamp=None, endTStamp=None):
         def helpy(beginTStamp, endTStamp, depth=2):
             # iterate over the calls found between the given start/end
             #  timestamps, which have been bounded to be inside our parent
             #  function...
-            for (subBeginTStamp, subEndTStamp, subPreCallSP,
+            for (subfunc, subBeginTStamp, subEndTStamp, subPreCallSP,
                  subStackEnd, thread) in self.cf.scanCallsBetweenTimes(beginTStamp,
                                                                        endTStamp):
-                subfunc = self.cf.findRunningFunction(subBeginTStamp)
-                if subfunc:
-                    if subfunc.name in self.excluded_functions:
-                        continue
+                if subfunc.name in self.excluded_functions:
+                    continue
                     
-                    pc = self.cf.getPC(subBeginTStamp)
-                    if self.flag_dis:
-                        self._diss(subBeginTStamp, None, self.dis_instructions, showRelTime=True)
-                    #self._showMem(subBeginTStamp, self.cf.getSP(subBeginTStamp) -32, 64)
-                    #pout('{fn}%s {.20}{w}%s {.30}{n}%s', subfunc.name,
-                    #     self._formatValue(self.cf.getReturnValue(subEndTStamp, subfunc)),
-                    #     self._formatParameters(self.cf.getParameters(subBeginTStamp, subfunc)),
-                    #     )
-                    pout('%s', subfunc.name)
-                    pout.i(2)
-                    if (not self.max_depth) or depth < self.max_depth:
-                        helpy(subBeginTStamp, subEndTStamp, depth + 1)
-                    #sline = self.cf.getSourceLineInfo(subBeginTStamp)
-                    #if sline:
-                    #    pout('{s}%s', self.cf.getSourceLines(sline))
-                    pout.i(-2)
+                pc = self.cf.getPC(subBeginTStamp)
+                if self.flag_dis:
+                    self._diss(subBeginTStamp-3, None, self.dis_instructions, showRelTime=True)
+                    self._diss(subBeginTStamp, None, self.dis_instructions, showRelTime=True)
+                #self._showMem(subBeginTStamp, self.cf.getSP(subBeginTStamp) -32, 64)
+                #pout('{fn}%s {.20}{w}%s {.30}{n}%s', subfunc.name,
+                #     self._formatValue(self.cf.getReturnValue(subEndTStamp, subfunc)),
+                #     self._formatParameters(self.cf.getParameters(subBeginTStamp, subfunc)),
+                #     )
+                pout('{fn}%s', subfunc.name)
+                pout.i(2)
+                if (not self.max_depth) or depth < self.max_depth:
+                    helpy(subBeginTStamp, subEndTStamp, depth + 1)
+                #sline = self.cf.getSourceLineInfo(subBeginTStamp)
+                #if sline:
+                #    pout('{s}%s', self.cf.getSourceLines(sline))
+                pout.i(-2)
+        
+        if beginTStamp:
+            helpy(beginTStamp, endTStamp)
+            return
         
         # find all the times the function in question was executed
         for func, beginTStamp in self.cf.scanExecution(func):
-            # okay, we may need to fudge here.  when dealing with a 'main'
-            #  function, its prologue may include some stack manipulation
-            #  track tricks us.  so we use the simple heuristic of scanning
-            #  through the code until we find the opcode that we expect.
-            # 32-bit only for now.
-            # UPDATE! it turns out we do not need to fudge, now that I
-            #  understand location lists, it turns out this is moot. 
-#            if self.cf._reg_bits == 32:
-#                fudgeStamp = beginTStamp
-#                while fudgeStamp < beginTStamp + 16:
-#                    entry_pc   = self.cf.getPC(fudgeStamp)
-#                    entry_code = self.cf.readMem(fudgeStamp, entry_pc, 1)
-#                    if entry_code == '\x55':
-#                        beginTStamp = fudgeStamp
-#                        break
-#                    fudgeStamp += 1
-            
             #callInfo = self.cf.findStartOfCall(beginTStamp+1)
             endTStamp = self.cf.findEndOfCall(beginTStamp)
-            #print 'BEGIN', beginTStamp, 'BOB', callInfo[0], 'END', endTStamp, 'BOB', callInfo[1]
-            #if callInfo:
-            #    beginTStamp, endTStamp = callInfo[0:2]
-            #else:
-            #    beginTStamp += 1
-            #self.dump_stack(beginTStamp)
-            #curfunc = self.cf.findRunningFunction(beginTStamp)
-            #pout('prologue entry: %x end: %x', curfunc.entryPoint, curfunc.prologueEnd)
             if self.flag_dis:
                 self._diss(beginTStamp, None, self.dis_instructions, showRelTime=True)
             
@@ -334,6 +319,9 @@ class Chronisole(object):
         self.jsScriptFilenameOffset = jsScriptFilename.offset
         self.jsScriptFilenameSize = jsScriptFilename.size
         
+        # -- get down frame info
+        jsDownField = jsFrameType.getField('down')
+        
         for func, beginTStamp in self.cf.scanExecution(func):
             endTStamp = self.cf.findEndOfCall(beginTStamp)
             context = self.cf.getReturnValue(endTStamp, func)
@@ -355,8 +343,13 @@ class Chronisole(object):
             
             stack = []
             for writeStamp, writeValue in mem_writes:
+                # figure out what point we're at
+                func = self.cf.findRunningFunction(writeStamp)
+
+                
                 if writeValue == 0:
-                    print 'Null write. Resetting stack.'
+                    pout('{n}Null write. Resetting stack. From {w}%s{n}',
+                         func.name)
                     pout.i(-2 * len(stack))
                     stack = []
                     continue
@@ -364,17 +357,29 @@ class Chronisole(object):
                 # figure out if we're pushing or popping...
                 if writeValue in stack:
                     idx = stack.index(writeValue)
-                    delta = len(stack) - idx
-                    del stack[idx:]
+                    delta = len(stack) - idx - 1
+                    del stack[idx+1:]
                     pout.i(-2 * delta)
-                    print 'Pop! Now at', stack
+                    pout('{s}Pop! by {w}%s {s}Now at: {n}%s',
+                         func.name, map(hex, stack))
                 else:
+                    # it could be some form of replacement or something.
+                    # check fp->down for more info
+                    fpDown = self.cf.readInt(writeStamp,
+                                             writeValue+jsDownField.offset,
+                                             jsDownField.size)
+                    
+                    if fpDown in stack:
+                        # delete everything _above_ our down friend
+                        idx = stack.index(fpDown)
+                        delta = len(stack) - idx - 1
+                        del stack[idx+1:]
+                        pout.i(-2 * delta)
+                        
                     stack.append(writeValue)
                     if writeValue == 0:
                         print 'Null push, somewhat ignoring...'
                     else:
-                        # figure out what point we're at
-                        func = self.cf.findRunningFunction(writeStamp)
                         # js_Invoke:
                         #  top of the func, initial frame.
                         #  (calls js_Interpret)
@@ -400,19 +405,85 @@ class Chronisole(object):
                         pout.i(2)
 
                         if scriptName is None and func.name == 'js_Invoke':
-                            pout('{e}I want to recurse!')
+                            (subfunc, subBeginTStamp, subEndTStamp, subPreCallSP,
+                             subStackEnd, thread) = self.cf.findNextCall(
+                                writeStamp, endTStamp)
+                            if subfunc == self.xpcCallMethod:
+                                # fast-forward to just before the call to
+                                #  SetCallInfo, as the locals will have the info
+                                #  we want just sitting there!
+                                tsPreSetCallInfo = self.cf.findExecution(
+                                    self.xpcCallMethodPreSetCallInfoPC,
+                                    subBeginTStamp, subEndTStamp)
+                                locals = self.cf.getLocals(tsPreSetCallInfo)
+                                pInterface = locals['iface']
+                                xpcInterface = self.xpc_get_interface(
+                                    tsPreSetCallInfo, pInterface)
+                                
+                                pout('{e}XPC Call {n}%s...', xpcInterface.name)
+                                # this means a dispatch is going to happen.
+                                # we know the pc that will happen before then...
+                                tsPreDispatch = self.cf.findExecution(
+                                    self.invokePreDispatchPC, subBeginTStamp,
+                                    subEndTStamp)
+                                # now that dispatch is the next call!
+                                if tsPreDispatch:
+                                    nextCall = self.cf.findNextCall(tsPreDispatch,
+                                                                    subEndTStamp)
+                                     
+                                    self.trace_function(*nextCall[0:3])
+                                else:
+                                    pout('{e}Unable to find thing.{n}')
+                            elif subfunc:
+                                pout('{e}Call {n}%s.', subfunc.name)
+                            else:
+                                pout('{e}I wanted to recurse!')
                             
 
     
     def init_jstrace(self):
+        # -- JSString support
         self.jsStringType = self.cf.lookupGlobalType('JSString')
-        print 'JSString:', self.jsStringType
         self.jsStringLengthOffset = self.jsStringType.getField('length').offset
         self.jsStringLengthSize = self.jsStringType.getField('length').size
         uUnionField = self.jsStringType.getField('u')
         charsPtrField = uUnionField.realType.getField('chars')
         self.jsStringPointerOffset = uUnionField.offset
         self.jsStringPointerSize = charsPtrField.size
+        
+        # -- XPConnect Support
+        self.nsInvokeByIndex = self.cf.lookupGlobalFunction('NS_InvokeByIndex')
+        self.nsInvokeByIndexP = self.cf.lookupGlobalFunction('NS_InvokeByIndex_P')
+        
+        # to be clever, we want to locate within NS_InvokeByIndex_P the point
+        #  after the call to invoke_copy_to_stack which is where the actual
+        #  dispatch happens.  this will allow us to just follow the next call
+        #  to wherever it leads.
+        invokeCopyToStack = self.cf.lookupGlobalFunction('invoke_copy_to_stack')
+        # find the call to invokeCopyToStack
+        tsCopyToStackStart = self.cf.findExecution(invokeCopyToStack)
+        tsCopyToStackEnd = self.cf.findEndOfCall(tsCopyToStackStart)
+        # find the next call following that guy
+        nextCall = self.cf.findNextCall(tsCopyToStackEnd,
+                                        # end ts is arbitrary but sufficient
+                                        invokeCopyToStack.endTStamp)
+        tsPreDispatch, pcPreDispatch = self.cf.findCallerPC(nextCall[1])
+        self.invokePreDispatchPC = pcPreDispatch
+        pout('{e}Pre-Dispatch PC: {n}%x', self.invokePreDispatchPC)
+        
+        self.xpcCallMethod = self.cf.lookupGlobalFunction('XPC_WN_CallMethod')
+        self.xpcGetterSetter = self.cf.lookupGlobalFunction('XPC_WN_GetterSetter')
+
+        # find out the PC of the point just before we jump into SetCallInfo
+        #  in XPC_WN_CallMethod
+        tsCallMethodStart = self.cf.findExecution(self.xpcCallMethod)
+        setCallInfo = self.cf.lookupGlobalFunction('XPCCallContext::SetCallInfo')
+        tsSetCallInfoStart = self.cf.findExecution(setCallInfo,
+                                                   tsCallMethodStart,
+                                                   setCallInfo.endTStamp)
+        tsPreDispatch, pcPreDispatch = self.cf.findCallerPC(tsSetCallInfoStart)
+        self.xpcCallMethodPreSetCallInfoPC = pcPreDispatch
+        
     
     def js_gcthing(self, ptr):
         return ptr & ~7
@@ -478,6 +549,27 @@ class Chronisole(object):
             return self.cf.readPascalUniString(tstamp, pdata, length)
         else:
             return u'no-atom-string'
+    
+    def init_xpc(self):
+        self._xpcInterfaceCache = {}
+        
+        xpcInterfaceType = self.cf.lookupGlobalType('XPCNativeInterface')
+        xpcInterfaceType = xpcInterfaceType.loseTypedef()
+        self.xpcInterfaceNameField = xpcInterfaceType.getField('mName')
+    
+    def xpc_get_interface(self, tstamp, pNativeInterface):
+        if pNativeInterface in self._xpcInterfaceCache:
+            return self._xpcInterfaceCache[pNativeInterface]
+        
+        pInterfaceName = self.cf.readInt(tstamp,
+            pNativeInterface + self.xpcInterfaceNameField.offset,
+            self.xpcInterfaceNameField.size)
+        interfaceName = self.js_string_read(tstamp,
+            self.js_gcthing(pInterfaceName))
+        
+        xpcInterface = XPCInterfaceInfo(interfaceName, pNativeInterface)
+        self._xpcInterfaceCache[pNativeInterface] = xpcInterface
+        return xpcInterface
     
     def show_watches(self, beginTStamp, endTStamp, function=None, **kwargs):
         if function and function.name in self.watches_by_func:

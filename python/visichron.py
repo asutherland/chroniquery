@@ -118,32 +118,31 @@ class Visichron(csole.Chronisole):
             # iterate over the calls found between the given start/end
             #  timestamps, which have been bounded to be inside our parent
             #  function...
-            for (subBeginTStamp, subEndTStamp, subPreCallSP,
+            for (subfunc, subBeginTStamp, subEndTStamp, subPreCallSP,
                  subStackEnd, thread) in self.cf.scanCallsBetweenTimes(beginTStamp,
                                                                        endTStamp):
                 sub_invoc_ranges.append((subBeginTStamp, subEndTStamp))
-                subfunc = self.cf.findRunningFunction(subBeginTStamp)
-                if subfunc:
-                    if subfunc.name in self.excluded_functions:
-                        continue
-                    
-                    subvfunc = self._get_vfunc(subfunc)
-                    
-                    subinvoc = subvfunc.invoke(subBeginTStamp,
-                                               subEndTStamp, depth)
-                    
-                    vfunc.invoc_called(invoc, subinvoc)
-                    
-                    ss_ranges = []
-                    if (not self.max_depth) or depth < self.max_depth:
-                        ss_ranges.extend(helpy(subvfunc, subinvoc,
-                                               subBeginTStamp, subEndTStamp, depth + 1))
-                    
-                    cflow = self._determine_control_flow_id(subfunc,
-                                                            subBeginTStamp,
-                                                            subEndTStamp,
-                                                            ss_ranges)
-                    subvfunc.update_invoc_cflow(subinvoc, cflow)
+                
+                if subfunc.name in self.excluded_functions:
+                    continue
+                
+                subvfunc = self._get_vfunc(subfunc)
+                
+                subinvoc = subvfunc.invoke(subBeginTStamp,
+                                           subEndTStamp, depth)
+                
+                vfunc.invoc_called(invoc, subinvoc)
+                
+                ss_ranges = []
+                if (not self.max_depth) or depth < self.max_depth:
+                    ss_ranges.extend(helpy(subvfunc, subinvoc,
+                                           subBeginTStamp, subEndTStamp, depth + 1))
+                
+                cflow = self._determine_control_flow_id(subfunc,
+                                                        subBeginTStamp,
+                                                        subEndTStamp,
+                                                        ss_ranges)
+                subvfunc.update_invoc_cflow(subinvoc, cflow)
             
             return sub_invoc_ranges
         
