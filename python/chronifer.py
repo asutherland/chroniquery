@@ -847,6 +847,9 @@ class Chronifer(object):
         
         return params
     
+    def getParametersAsDict(self, *args, **kwargs):
+        return dict(self.getParameters(*args, **kwargs))
+    
     def getLocals(self, tstamp):
         c = self.c
         

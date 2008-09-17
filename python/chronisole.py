@@ -431,7 +431,7 @@ class Chronisole(object):
                                 xpcMember = self.xpc_get_member(
                                     tsPreSetCallInfo, pMember, xpcInterface)
                                 
-                                pout('{s}xpc {in}%s{s}::{fn}%s{n}',
+                                pout('{s}xpc {in}%s{s}::{fn}%s{s}()',
                                      xpcInterface.name, xpcMember.name)
                                 pout.i(2)
 
@@ -448,6 +448,26 @@ class Chronisole(object):
                                     self.trace_function(*nextCall[0:3])
                                 else:
                                     pout('{e}Unable to find thing.{n}')
+                            elif subfunc == self.xpcGetterSetter:
+                                tsPreSaarp = self.cf.findExecution(
+                                    self.xpcGetterSetterPreSaarpPC,
+                                    subBeginTStamp, subEndTStamp)
+                                locals = self.cf.getLocals(tsPreSaarp)
+                                pInterface = locals['iface']
+                                xpcInterface = self.xpc_get_interface(
+                                    tsPreSaarp, pInterface)
+                                pMember = locals['member']
+                                xpcMember = self.xpc_get_member(
+                                    tsPreSaarp, pMember, xpcInterface)
+                                
+                                params = self.cf.getParametersAsDict(tsPreSaarp,
+                                                        self.xpcGetterSetter)
+                                
+                                pout('{s}xpc %s {in}%s{s}::{fn}%s{n}',
+                                     params['argc'] and 'set' or 'get',
+                                     xpcInterface.name, xpcMember.name)
+                                pout.i(2)
+                                
                             else:
                                 pout('{s}nat {cn}%s{fn}%s',
                                      subfunc.containerPrefix, subfunc.name)
@@ -506,6 +526,18 @@ class Chronisole(object):
                                                    setCallInfo.endTStamp)
         tsPreDispatch, pcPreDispatch = self.cf.findCallerPC(tsSetCallInfoStart)
         self.xpcCallMethodPreSetCallInfoPC = pcPreDispatch
+        
+        # for XPC_WN_GetterSetter we need to use SetArgsAndResultPtr because
+        #  it has two calls to SetCallInfo inside of it and some branching,
+        #  whereas SAARP happens before the branching (and after the failure
+        #  handling for GetCallInfo)
+        tsGetterSetterStart = self.cf.findExecution(self.xpcGetterSetter)
+        SAARP = self.cf.lookupGlobalFunction(
+                                        'XPCCallContext::SetArgsAndResultPtr')
+        tsSAARP = self.cf.findExecution(SAARP, tsGetterSetterStart,
+                                        SAARP.endTStamp)
+        tsPreDispatch, pcPreDispatch = self.cf.findCallerPC(tsSAARP)
+        self.xpcGetterSetterPreSaarpPC = pcPreDispatch
         
     
     def js_gcthing(self, ptr):
