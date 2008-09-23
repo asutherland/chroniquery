@@ -336,6 +336,8 @@ class Chronifer(object):
         # this is really the evil part.
         if 'comm-central/' in norm_path:
             norm_path = norm_path[norm_path.rindex('comm-central/')+13:]
+        elif 'mozilla-central/' in norm_path:
+            norm_path = 'mozilla/' + norm_path[norm_path.rindex('mozilla-central/')+16:]
         # (this still counts as the evil part.  in fact, it's more evil.)
         if norm_path.startswith('obj-'):
             # strip the objdir off...
