@@ -342,6 +342,8 @@ class Chronifer(object):
         if norm_path.startswith('obj-'):
             # strip the objdir off...
             norm_path = norm_path[norm_path.find('/')+1:]
+        elif norm_path.startswith('mozilla/obj-'):
+            norm_path = norm_path[norm_path.find('/', 8)+1:]
         return norm_path
     
     def _startupPrep(self):
