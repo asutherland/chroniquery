@@ -73,6 +73,8 @@ class Chronisole(object):
         self.watches_by_func = {}
         
         self.functions = soleargs.get('functions', [])
+        self.libraries = soleargs.get('libraries', [])
+        self.values = soleargs.get('values', [])
         self.excluded_functions = soleargs.get('excluded_functions', [])
         self.max_depth = soleargs.get('depth', 0)
         self.flag_dis = soleargs.get('disassemble', False)
@@ -93,6 +95,8 @@ class Chronisole(object):
             self.jstrace()
         elif self.action == 'mmap':
             self.show_mmap()
+        elif self.action == 'findret':
+            self.find_calls_with_return_value()
     
     # all this watch stuff is prototyping; generalization/prettification needs
     #  to follow
@@ -203,7 +207,6 @@ class Chronisole(object):
             last_locals = locals
     
     def trace(self, function_names):
-        func_name_to_addr = {}
         for func_name in function_names:
             func = self.cf.lookupGlobalFunction(func_name)
             if func is None:
@@ -212,8 +215,6 @@ class Chronisole(object):
                     pout('   {n}Alternative: {ex}%s {s}(%s)', aname, akind)
             else:
                 self.trace_function(func)
-            #self.cf.scanEnterSP(1388067, #func.beginTStamp,
-            #                    func.endTStamp)
             
     def show_mmap(self):
         for mmap in self.cf.scanMemMap(self.cf._beginTStamp,
@@ -287,7 +288,7 @@ class Chronisole(object):
         # find all the times the function in question was executed
         for func, beginTStamp in self.cf.scanExecution(func):
             #callInfo = self.cf.findStartOfCall(beginTStamp+1)
-            endTStamp = self.cf.findEndOfCall(beginTStamp)
+            endTStamp = self.cf.findEndOfCall(beginTStamp) or func.endTStamp
             if self.flag_dis:
                 self._diss(beginTStamp, None, self.dis_instructions, showRelTime=True)
             
@@ -762,8 +763,73 @@ class Chronisole(object):
                 pout('{g}%x %x {.20}%s', address, val, mappy.get(address))
             else:
                 pout('{n}%x %x {.20}%s', address, val, mappy.get(address))
+
+    def showBackTrace(self, tstamp, depth=0):
+        call = self.cf.findStartOfCall(tstamp)
+        if call is None:
+            return
         
-                
+        beginTStamp, endTStamp, preCallSP, stackEnd, thread = call
+        
+        # step through the CALL...
+        enterTStamp = beginTStamp + 1
+        
+        if not depth:
+            pout('Backtrace:')
+
+        if self.flag_dis:
+            self._diss(enterTStamp, None, self.dis_instructions, showRelTime=True)
+            self._diss(endTStamp, None, self.dis_instructions, showRelTime=True)
+        
+        func = self.cf.findRunningFunction(enterTStamp)
+        parameters = self.cf.getParameters(enterTStamp)
+        pout('%d {fn}%s {.20}{w}%s {.30}{n}%s',
+             depth, func.name,
+             self._formatValue(self.cf.getReturnValue(endTStamp, func)),
+             self._formatParameters(parameters),
+             )
+        
+        # since beginTStamp is pointing at our CALL, no need to adjust
+        self.showBackTrace(beginTStamp, depth+1)
+        
+
+    def find_calls_with_return_value(self):
+        interesting_values = set(self.values)
+        
+        ranges = []
+        
+        for func_name in self.functions:
+            func = self.cf.lookupGlobalFunction(func_name)
+            if func is None:
+                pout('{e}No such function {n}%s{e}! {s}(skipping)', func_name)
+                for aname, akind in self.cf.autocomplete(func_name):
+                    pout('   {n}Alternative: {ex}%s {s}(%s)', aname, akind)
+                continue
+            self.cf.rangeAdd(ranges, func)
+        
+        for library_name in self.libraries:
+            debugObjectInfo = self.cf.getDebugObjectInfo(library_name)
+            ranges.extend(debugObjectInfo['func_entry_ranges'])
+        
+        if not ranges:
+            pout('{e}No ranges found using the given functions/libraries')
+            return
+        
+        for func, beginTStamp in self.cf.scanExecution(ranges):
+            endTStamp = self.cf.findEndOfCall(beginTStamp)
+            if endTStamp is None:
+                continue
+            
+            retval = self.cf.getReturnValue(endTStamp, func)
+            if retval in interesting_values:
+                pout('{g}Interesting! {n}%x {s}from {fn}%s', retval,
+                     func.name)
+                pout.i(2)
+                if self.flag_dis:
+                    self._diss(beginTStamp, None, self.dis_instructions, showRelTime=True)
+                    self._diss(endTStamp, None, self.dis_instructions, showRelTime=True)
+                self.showBackTrace(beginTStamp+2)
+                pout.i(-2)
             
     def stop(self):
         try:
@@ -784,6 +850,17 @@ def main(args=None, soleclass=Chronisole):
     oparser.add_option('-f', '--func',
                        dest='functions', action='append', type='str',
                        help='Add list to list of functions to process.',
+                       default=[]
+                       )
+    oparser.add_option('-l', '--library',
+                       dest='libraries', action='append', type='str',
+                       help='Add library to the list or regions to use.',
+                       default=[]
+                       )    
+    oparser.add_option('-v', '--value',
+                       dest='values', action='append', type='int',
+                       help='Add list to list of values to process.',
+                       default=[]
                        )
     oparser.add_option('-x', '--exclude-func',
                        dest='excluded_functions', action='append', type='str',
@@ -832,6 +909,8 @@ def main(args=None, soleclass=Chronisole):
         pout.write_html_intro('Chronisole Output')
     
     cs = soleclass({'functions': opts.functions,
+                     'libraries': opts.libraries,
+                     'values': opts.values,
                      'excluded_functions': opts.excluded_functions,
                      'depth': opts.depth,
                      'disassemble': opts.disassemble,

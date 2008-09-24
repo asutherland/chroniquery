@@ -54,11 +54,11 @@ class FuncInfo(object):
             self.interesting = False
             self.depth = 0
             self.boring = True
-
-        if not self.boring:
-            print 'Function', self.fullName, 'idb', self.interesting, self.depth, self.boring
-            print ' Compilation Unit', self.compilationUnit
-            print ' Compilation Dir', self.compilationUnitDir
+            
+        #if not self.boring:
+        #    print 'Function', self.fullName, 'idb', self.interesting, self.depth, self.boring
+        #    print ' Compilation Unit', self.compilationUnit
+        #    print ' Compilation Dir', self.compilationUnitDir
 
 
 class TypeInfo(object):
@@ -357,7 +357,12 @@ class Chronifer(object):
         
         self._configureArch()
         
-        trash = c.getAsync()
+        self._debugInfoFiles = []
+        for info in c.getAsync():
+            if info['message'] == 'debug.file.got.debug.info':
+                text = info['text']
+                path = text[text.find("'")+1:-1]
+                self._debugInfoFiles.append(path)
     
     def _configureArch(self):
         if self._arch == 'x86':
@@ -455,6 +460,97 @@ class Chronifer(object):
             if 'name' in ainfo:
                 yield ainfo['name'], ainfo['kind']
     
+    def getDebugObjectInfo(self, debugObjectName):
+        # it is unlikely the user is supplying the full path.  see what the
+        #  startup told us about...
+        for path in self._debugInfoFiles:
+            if path.endswith(debugObjectName):
+                debugObjectName = path
+                break
+        
+        ranges = []
+        functions = []
+        func_entry_ranges = []
+        foundMaps = []
+        comp_units_without_offsets = comp_units_with_offsets = 0
+        for comp_unit in self.c.ssa('lookupCompilationUnits',
+                                debugObjectName=debugObjectName,
+                                compilationUnitName=''):
+            # ACSHACK-dependent
+            if comp_unit.get('type') == 'mmap':
+                foundMaps.append(comp_unit)
+                continue
+            
+            if 'compilationUnitBegin' in comp_unit:
+                comp_units_with_offsets += 1
+                length = (comp_unit['compilationUnitEnd'] -
+                          comp_unit['compilationUnitBegin'])
+                if not length:
+                    continue
+                
+                start = comp_unit['compilationUnitBegin']
+                range = {'start': start, 'length': length}
+                ranges.append(range)
+                
+                # gr, find the timestamp when the compilation unit was mapped
+                tstamp = self.findWhenMapped(range) + 1
+                
+                # find all the functions...
+                endOffset = start + length
+                offset = start
+                while offset < endOffset:
+                    func = self.findRunningFunction(tstamp, offset, False)
+                    if func is not None:
+                        functions.append(func)
+                        if func.entryPoint:
+                            func_entry_ranges.append({'start': func.entryPoint,
+                                                      'length': 1})
+                        if func.ranges:
+                            offset = max(offset,
+                                         self.rangeGreatest(func.ranges)+1)
+                        else:
+                            print 'no ranges!'
+                            offset += 1
+                    else:
+                        print 'no func!'
+                        offset += 1
+            else:
+                comp_units_without_offsets += 1
+        
+        # use the memory map info if we couldn't find any offsets.
+        if comp_units_without_offsets > comp_units_with_offsets:
+            print 'FALLBACK MMAP, THIS WILL BE SLOW'
+            
+            PROBE_STEP_SIZE = 32
+            
+            for mmap in foundMaps:
+                endOffset = mmap['start'] + mmap['length']
+                offset = mmap['start']
+                tstamp = mmap['TStamp'] + 100
+                while offset < endOffset:
+                    func = self.findRunningFunction(tstamp, offset, False,
+                                                    False)
+                    if func is not None:
+                        functions.append(func)
+                        if func.entryPoint:
+                            func_entry_ranges.append({'start': func.entryPoint,
+                                                      'length': 1})
+                        if func.ranges:
+                            offset = max(offset,
+                                         self.rangeGreatest(func.ranges)+1)
+                        else:
+                            #print 'no ranges! %x' % offset
+                            offset += PROBE_STEP_SIZE
+                    else:
+                        #print 'no func! %x' % offset
+                        offset += PROBE_STEP_SIZE
+            
+            print 'FALLBACK MMAP DONE, OTHER SLOWNESS IS UNRELATED'
+        
+        return {'ranges': ranges, 'functions': functions,
+                'func_entry_ranges': func_entry_ranges}
+        
+    
     def getRangesUsingExecutableCompilationUnits(self):
         # dubious ability to handle non-absolute paths for cases where the
         #  data file is local but the executable was on our path or such.
@@ -515,7 +611,11 @@ class Chronifer(object):
     def findStartOfCall(self, tstamp):
         '''
         Find the start of the function call that is being executed at timestamp
-        tstamp.
+        tstamp.  NOTE: This currently will return the timestamp when the pc
+        points at the 'call' instruction or what have you.  This may not
+        actually be what we want for consistency.  For example, detecting
+        things by entry point will gives us the timestamp when our pc is
+        actually in the function, so 1 more than this timestamp.
         
         We get the party started by finding the current stack pointer (last /
         lowest occupied location).  We then find the start of the stack.
@@ -662,6 +762,11 @@ class Chronifer(object):
         '''
         Given the tstamp of the first instruction of the given function, find the
         tstamp of the last instruction of the function.
+        
+        NOTE: Actually, this currently gives us the timestamp when our pc
+        corresponds to the "LEAVE" instruction, which will actually be followed
+        by a "RET" instruction which will be the true last instruction of the
+        function.
         '''
         sp, thread = self.getRegisters(tstamp, self._sp_reg,
                                        self._thread_reg)
@@ -687,7 +792,8 @@ class Chronifer(object):
         else:
             return None
     
-    def findRunningFunction(self, tstamp, pc=None, unknown_ok=True):
+    def findRunningFunction(self, tstamp, pc=None, unknown_ok=True,
+                            do_cache_failures=False):
         '''
         Find the function executing at time tstamp.
         '''
@@ -704,9 +810,12 @@ class Chronifer(object):
                 else:
                     func = self._fabFunction(finfo)
                     self._funcCache[func.entryPoint] = func
-            else:
+            elif unknown_ok:
                 func = self._fabAnonFunction(pc)
-            self._funcCache[pc] = func
+            else:
+                func = None
+            if func or do_cache_failures:
+                self._funcCache[pc] = func
         return func
     
     def findMemoryWrites(self, beginTStamp, endTStamp, beginAddr, memSize=None):
@@ -830,6 +939,9 @@ class Chronifer(object):
         return (tstamp + 1, pc)
     
     def findContainingFunction(self, tstamp, addr):
+        '''
+        findRunningFunction is smarter (caching), use it.
+        '''
         finfo = self.c.sss('findContainingFunction',
                            address=addr,
                            TStamp=tstamp)
@@ -1126,32 +1238,105 @@ class Chronifer(object):
             else:
                 lines.append((filename, lineno, '', line, ''))
         return lines
+    
+    def rangeAdd(self, ranges, func_or_range):
+        if isinstance(func_or_ranges, FuncInfo):
+            range = [{'start': func_or_ranges.entryPoint, 'length': 1}]
+        else:
+            range = func_or_range
+        # unioning is for suckers
+        # TODO: actually union...
+        ranges.append(range)
 
-    def scanMemMap(self, beginTStamp, endTStamp):
-        # scan all of memory!
+    def rangeSubtract(self, ranges, subRange):
+        iRange = 0
+        subEnd = subRange['start'] + subRange['length']
+        while iRange < len(ranges):
+            range = ranges[iRange]
+            #rangeStart = range['start']
+            rangeEnd = range['start'] + range['length']
+            if (range['start'] > subEnd or
+                rangeEnd < subRange['start']):
+                iRange += 1
+                continue
+            # there is some intersection
+            del ranges[iRange]
+            # ...------
+            if range['start'] < subRange['start']:
+                ranges.insert(iRange, {'start': range['start'],
+                                       'length': subRange['start'] - 
+                                                 range['start']})
+                iRange += 1
+            if rangeEnd > subEnd:
+                ranges.insert(iRange, {'start': subEnd,
+                                       'length': rangeEnd - subEnd})
+                iRange += 1
+    
+    def rangeGreatest(self, ranges):
+        greatest = None
+        for range in ranges:
+            end = range['start'] + range['length']
+            if greatest is None or end > greatest:
+                greatest = end
+        return greatest
+
+    def findWhenMapped(self, range):
+        earliest = None
         for mmap in self.c.ssm('scan',
                                 map='MEM_MAP',
-                                beginTStamp=beginTStamp, endTStamp=endTStamp,
-                                ranges=[{'start': 0, 'length': self._max_long}]
+                                beginTStamp=self._beginTStamp,
+                                endTStamp=self._endTStamp,
+                                ranges=[range],
+                                termination='findFirst'
                                 ):
-            yield mmap
+            if 'TStamp' in mmap:
+                if earliest is None:
+                    earliest = mmap['TStamp']
+                else:
+                    earliest = min(earliest, mmap['TStamp'])
+        return earliest
         
 
-    def scanEnterSP(self, beginTStamp, endTStamp):
+    def scanMemMap(self, beginTStamp, endTStamp):
+        '''
+        MEM_MAP currently has non-intuitive (to me) behaviour where it finds
+        the first memory mapped region that intersects our request and simply
+        returns the map events for that range.  so we notch out areas from our
+        request as we get events on those ranges.
+        '''
+        # scan all of memory!
+        ranges = [{'start': 0, 'length': self._max_long}]
+        
+        results_this_pass = 1
+        while results_this_pass:
+            results_this_pass = 0
+            for mmap in self.c.ssm('scan',
+                                    map='MEM_MAP',
+                                    beginTStamp=beginTStamp, endTStamp=endTStamp,
+                                    ranges=ranges
+                                    ):
+                if 'start' in mmap:
+                    results_this_pass += 1
+                    subRange = {'start': mmap['start'],
+                                'length': mmap['length']}
+                    self.rangeSubtract(ranges, subRange)
+                    yield mmap
+        
+
+    def scanEnterSP(self, ranges, beginTStamp=None, endTStamp=None):
+        beginTStamp = beginTStamp or self._beginTStamp
+        endTStamp = endTStamp or self._endTStamp
+        
         for instr in self.c.ssm('scan',
                                 map='ENTER_SP',
                                 beginTStamp=beginTStamp, endTStamp=endTStamp,
-                                ranges=[{'start': 0, 'length': self._max_long}]):
+                                ranges=ranges):
             if 'TStamp' in instr and instr.get('type') == 'normal':
                 tstamp = instr['TStamp']
+                print 'taz'
                 func = self.findRunningFunction(tstamp)
-                if func:
-                    print instr['TStamp'], hex(instr['start']), func.name
-                else:
-                    print '           ', instr['TStamp'], hex(instr['start'])
-                    sline = self.getSourceLineInfo(tstamp)
-                    if sline:
-                        print self.getSourceLines(sline)
+                print 'yaz'
+                yield (func, tstamp)
 
     def scanInstructionExecuted(self, timestamp, address, endTStamp=None):
         if endTStamp is None:
@@ -1184,18 +1369,33 @@ class Chronifer(object):
                 return instr['TStamp']
         return None
 
-    def scanExecution(self, func):
+    def scanExecution(self, func_or_ranges, beginTStamp=None, endTStamp=None):
         '''
         '''
+        if isinstance(func_or_ranges, FuncInfo):
+            ranges = [{'start': func_or_ranges.entryPoint, 'length': 1}]
+            beginTStamp = beginTStamp or func_or_ranges.beginTStamp
+            endTStamp = endTStamp or func_or_ranges.endTStamp
+            func = func_or_ranges 
+        else:
+            ranges = func_or_ranges
+            beginTStamp = beginTStamp or self._beginTStamp
+            endTStamp = endTStamp or self._endTStamp
+            func = None
+        
         for instr in self.c.ssm('scan',
                            map='INSTR_EXEC',
-                           beginTStamp=func.beginTStamp,
-                           endTStamp=func.endTStamp,
-                           ranges=[{'start': func.entryPoint, 'length': 1}],
+                           beginTStamp=beginTStamp,
+                           endTStamp=endTStamp,
+                           ranges=ranges,
                            # no termination
                            ):
             if 'TStamp' in instr and instr['type'] == 'normal':
-                yield (func, instr['TStamp'])
+                if func:
+                    yield (func, instr['TStamp'])
+                else:
+                    tstamp = instr['TStamp']
+                    yield (self.findRunningFunction(tstamp), tstamp)
 
     def getSourceLineInfo(self, tstamp, address=None):
         '''

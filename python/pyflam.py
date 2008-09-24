@@ -183,10 +183,10 @@ class FlamOut(object):
             for i, v in enumerate(o):
                 if i == 0:
                     pre = '['
-                    post = ','
+                    post = (i != last) and ',' or ']'
                 elif i == last:
                     pre = ' '
-                    post =']'
+                    post = ']'
                 else:
                     pre= ' '
                     post = ','
@@ -202,7 +202,7 @@ class FlamOut(object):
             for k, v in o.items():
                 if i == 0:
                     pre = '{'
-                    post = ','
+                    post = (i != last) and ',' or '}'
                 elif i == last:
                     pre = ' '
                     post ='}'
@@ -215,13 +215,13 @@ class FlamOut(object):
                     self.pp(v)
                     self.i(-1)
                     if i == last:
-                        self.pp('{n}%s', post)
+                        self('{n}%s', post)
                 else:
                     self('{n}%s{k}%s{n}: {v}%s{n}%s', pre, k, v, post)
                 i += 1
 
         else:
-            self(str(o))
+            self('%s', str(o))
 
     def v(self, msg, *args, **kwargs):
         if self._verbose:
