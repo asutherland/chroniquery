@@ -611,11 +611,7 @@ class Chronifer(object):
     def findStartOfCall(self, tstamp):
         '''
         Find the start of the function call that is being executed at timestamp
-        tstamp.  NOTE: This currently will return the timestamp when the pc
-        points at the 'call' instruction or what have you.  This may not
-        actually be what we want for consistency.  For example, detecting
-        things by entry point will gives us the timestamp when our pc is
-        actually in the function, so 1 more than this timestamp.
+        tstamp.
         
         We get the party started by finding the current stack pointer (last /
         lowest occupied location).  We then find the start of the stack.
@@ -649,20 +645,31 @@ class Chronifer(object):
                                     'length': stackEnd - stackBegin}])
 
         if cinfo.get('type') == 'normal':
-            candidateEnterTStamp = cinfo['TStamp']
-            candidateEnterSP = cinfo['start']
-            candidatePreCallSP = candidateEnterSP + self._ptr_size 
+            # we add 1 because otherwise we're just pointing at the 'call'
+            #  which means that we aren't actually in the actual function
+            candidateEnterTStamp = cinfo['TStamp'] + 1
+            
+            #candidateEnterSP = cinfo['start']
+            #candidatePreCallSP = candidateEnterSP + self._ptr_size
+            # ACSHACK: so, I'm not entirely sure why we were calculating the
+            #  stack like that in the first place.  really, we are looking
+            #  for the symmetry of the push-and-pop, so simply retrieving the
+            #  stack pointer at the point of entry should be fine...
+            sp = self.getRegister(candidateEnterTStamp, self._sp_reg)
             candidateEndTStamp = self._findEndOfCallWithRegs(candidateEnterTStamp,
-                                                             candidatePreCallSP,
+                                                             sp,
                                                              thread)
+            if candidateEndTStamp is None:
+                return None
+            
             if candidateEndTStamp > tstamp:
                 return (candidateEnterTStamp,
                         candidateEndTStamp,
-                        candidatePreCallSP, stackEnd,
+                        sp, stackEnd,
                         thread)
             else:
                 return self._findStartOfCallWithRegs(candidateEnterTStamp,
-                                                     candidatePreCallSP,
+                                                     sp,
                                                      stackEnd, thread)
                 
         return None

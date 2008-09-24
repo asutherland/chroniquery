@@ -771,8 +771,8 @@ class Chronisole(object):
         
         beginTStamp, endTStamp, preCallSP, stackEnd, thread = call
         
-        # step through the CALL...
-        enterTStamp = beginTStamp + 1
+        # we no longer need to pierce the call
+        enterTStamp = beginTStamp
         
         if not depth:
             pout('Backtrace:')
@@ -789,8 +789,9 @@ class Chronisole(object):
              self._formatParameters(parameters),
              )
         
-        # since beginTStamp is pointing at our CALL, no need to adjust
-        self.showBackTrace(beginTStamp, depth+1)
+        # since beginTStamp is no longer pointing at the call, we need to
+        #  adjust
+        self.showBackTrace(beginTStamp-1, depth+1)
         
 
     def find_calls_with_return_value(self):
@@ -828,7 +829,7 @@ class Chronisole(object):
                 if self.flag_dis:
                     self._diss(beginTStamp, None, self.dis_instructions, showRelTime=True)
                     self._diss(endTStamp, None, self.dis_instructions, showRelTime=True)
-                self.showBackTrace(beginTStamp+2)
+                self.showBackTrace(beginTStamp)
                 pout.i(-2)
             
     def stop(self):
