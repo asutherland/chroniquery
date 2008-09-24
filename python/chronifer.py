@@ -1239,11 +1239,11 @@ class Chronifer(object):
                 lines.append((filename, lineno, '', line, ''))
         return lines
     
-    def rangeAdd(self, ranges, func_or_range):
+    def rangeAdd(self, ranges, func_or_ranges):
         if isinstance(func_or_ranges, FuncInfo):
-            range = [{'start': func_or_ranges.entryPoint, 'length': 1}]
+            range = {'start': func_or_ranges.entryPoint, 'length': 1}
         else:
-            range = func_or_range
+            range = func_or_ranges
         # unioning is for suckers
         # TODO: actually union...
         ranges.append(range)
