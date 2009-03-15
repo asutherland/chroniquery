@@ -81,6 +81,8 @@ class Chronisole(object):
         self.dis_instructions = soleargs.get('instructions', 3)
         self.show_locals = soleargs.get('show_locals', True)
         self.process_watch_defs(soleargs.get('watch_defs', ()))
+        self.call_details = soleargs.get('call_details', False)
+        self.file_per_func_invoc = soleargs.get('file_per_func_invoc', False)
         
         self.dis = chrondis.ChronDis(self.cf._reg_bits)
     
@@ -225,10 +227,10 @@ class Chronisole(object):
         if type(value) in (int, long):
             v = hex(value)
         elif isinstance(value, basestring):
-            v = "'%s'" % value
+            v = repr(value)
         else:
             v = str(value)
-        return v        
+        return v
     
     def _formatParameters(self, parameters):
         str_parts = []
@@ -264,7 +266,17 @@ class Chronisole(object):
                 if subfunc.boring:
                     continue
                 
-                pout('{s}cpp {cn}%s{fn}%s', subfunc.containerPrefix, subfunc.name)
+                if self.call_details:
+                    pout('{s}cpp {cn}%s{fn}%s {.20}{w}%s {.30}{n}%s',
+                         subfunc.containerPrefix, subfunc.name,
+                         # it's possible the call never returned due to abort-death. (sad!)
+                         subEndTStamp and
+                             self._formatValue(self.cf.getReturnValue(subEndTStamp, subfunc)) or
+                             "n/a",
+                         self._formatParameters(self.cf.getParameters(subBeginTStamp, subfunc)),
+                         )
+                else:
+                    pout('{s}cpp {cn}%s{fn}%s', subfunc.containerPrefix, subfunc.name)
                 pout.i(2)
                 
                 rel_max_depth = max(max_depth, depth + subfunc.depth)
@@ -278,7 +290,17 @@ class Chronisole(object):
         if beginTStamp:
             if func.boring:
                 return
-            pout('{s}cpp {cn}%s{fn}%s', func.containerPrefix, func.name)
+            if self.call_details:
+                pout('{s}cpp {cn}%s{fn}%s {.20}{w}%s {.30}{n}%s',
+                     func.containerPrefix, func.name,
+                     # it's possible the call never returned due to abort-death. (sad!)
+                     endTStamp and
+                         self._formatValue(self.cf.getReturnValue(endTStamp, func)) or
+                         "n/a",
+                     self._formatParameters(self.cf.getParameters(beginTStamp, func)),
+                     )
+            else:
+                pout('{s}cpp {cn}%s{fn}%s', func.containerPrefix, func.name)
             if func.interesting:
                 pout.i(2)
                 helpy(beginTStamp, endTStamp)
@@ -293,16 +315,26 @@ class Chronisole(object):
                 self._diss(beginTStamp, None, self.dis_instructions, showRelTime=True)
             
             parameters = self.cf.getParameters(beginTStamp)
+            if self.file_per_func_invoc:
+                pout.linkToPermutation(beginTStamp)
             pout('{fn}%s {.20}{w}%s {.30}{n}%s',
                  func.name,
                  self._formatValue(self.cf.getReturnValue(endTStamp, func)),
                  self._formatParameters(parameters),
                  )
+            if self.file_per_func_invoc:
+                pout.closeLink()
             pout.i(2)
             self.show_watches(beginTStamp, endTStamp, function=func,
                               parameters=parameters)
+
+            if self.file_per_func_invoc:
+                pout.pushFilePermutation(beginTStamp)
             if self.max_depth != 1:
                 helpy(beginTStamp, endTStamp, self.max_depth)
+            if self.file_per_func_invoc:
+                pout.popFilePermutation()
+
             pout.i(-2)
     
     def jstrace(self):
@@ -853,6 +885,10 @@ def main(args=None, soleclass=Chronisole):
                        help='Add list to list of functions to process.',
                        default=[]
                        )
+    oparser.add_option('-c', '--call-details',
+                       action='store_true', dest='call_details',
+                       default=False,
+                       help='Show details for all trace sub-calls')
     oparser.add_option('-l', '--library',
                        dest='libraries', action='append', type='str',
                        help='Add library to the list or regions to use.',
@@ -870,7 +906,7 @@ def main(args=None, soleclass=Chronisole):
     oparser.add_option('-d', '--depth',
                        dest='depth', type='int',
                        default=0)
-    
+
     oparser.add_option('-D', '--disassemble',
                        action='store_true', dest='disassemble',
                        default=False,
@@ -882,12 +918,17 @@ def main(args=None, soleclass=Chronisole):
     
     oparser.add_option('--no-locals',
                        action='store_false', dest='show_locals',
-                       default='True')
+                       default=True)
     
     oparser.add_option('-w', '--watch',
                        action='append', dest='watches',
                        default=[])
-    
+
+    oparser.add_option('--file-per-func-invoc',
+                       action='store_true', dest='file_per_func_invoc',
+                       default=False,
+                       help="Should each 'trace' function invocation get its own HTML file")
+
     oparser.add_option('--log',
                        action='store_true', dest='log', default=False,
                        help='Tell chronicle-query to log /tmp')
@@ -905,9 +946,8 @@ def main(args=None, soleclass=Chronisole):
     if opts.html_filename:
         global pout
         import pyflam
-        htmlfile = open(opts.html_filename, 'w')
-        pout = pyflam.FlamHTML(htmlfile, style=opts.style)
-        pout.write_html_intro('Chronisole Output')
+        pout = pyflam.FlamHTML(opts.html_filename, style=opts.style,
+                               title='Chronisole Output')
     
     cs = soleclass({'functions': opts.functions,
                      'libraries': opts.libraries,
@@ -918,6 +958,8 @@ def main(args=None, soleclass=Chronisole):
                      'instructions': opts.instructions,
                      'show_locals': opts.show_locals,
                      'watch_defs': opts.watches,
+                     'call_details': opts.call_details,
+                     'file_per_func_invoc': opts.file_per_func_invoc,
                      },
                     querylog=opts.log,
                     extremeDebug=opts.extremeDebug,
@@ -925,9 +967,8 @@ def main(args=None, soleclass=Chronisole):
                     *args)
     cs.run()
 
-    if htmlfile:
-        pout.write_html_outro()
-        htmlfile.close()
+    if opts.html_filename:
+        pout.close()
     
     cs.stop()
 

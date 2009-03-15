@@ -261,7 +261,7 @@ class Chronifer(object):
         
         # non-existent paths are inherently boring
         if path is None:
-            return interesting, depth, boring
+            return interesting, depth, True
         
         # paths first
         cur_path = ''
@@ -728,6 +728,7 @@ class Chronifer(object):
                 subEndTStamp = self._findEndOfCallWithRegs(subEnterTStamp + 1,
                                                            subEnterSP,
                                                            thread)
+
                 # we have the very real potential to be happening upon a
                 #  trampoline.  I love trampolines as much as the next guy, but
                 #  this vaguely screws up my analysis.  so, let's just see if
@@ -746,6 +747,11 @@ class Chronifer(object):
                            subEndTStamp,
                            subPreCallSP,
                            stackEnd, thread)
+
+                    # no endTStamp suggests that the program aborted without
+                    #  returning from the call.  in that case, we're done!
+                    if subEndTStamp is None:
+                        break
 
                     # the next possible call has to be after this one returned
                     # (this rules out sub-call following, we leave that to our caller!)
