@@ -22,7 +22,9 @@
 import re, sys, os.path
         
 class FlamOut(object):
-    def __init__(self):
+    def __init__(self, fout=None):
+        self.fout = fout or sys.stdout
+
         self._cmap = {}
         self._pat = re.compile('(?:{([^}]+)})|(%([-#0 +]*)(\d*)\.?(\d*)([sdx]))')
 
@@ -35,6 +37,9 @@ class FlamOut(object):
         self._verbose = kwargs.get('verbose', self._verbose)
 
     def init_map(self):
+        self.map_control('-fg', '39')
+        self.map_control('-bg', '49')
+
         self.map_fg('h', 127)
         # normal
         self.map_fg('n', 0xf8)
@@ -70,6 +75,16 @@ class FlamOut(object):
         
         self.map_fg('k', 129)
         self.map_fg('v', 38)
+        self.map_fg('sk', 0x36)
+        self.map_fg('sv', 0x18)
+
+        interesting_colors = [0x3f, 0x63, 0x87, 0xab, 0xcf, 0xce, 0xcd, 0xcc,
+                              0x45, 0x69, 0x8d, 0xb1, 0xd5, 0xd4, 0xd3, 0xd2,
+                              0x4b, 0x6f, 0x93, 0xb7, 0xdb, 0xda, 0xd9, 0xd8,
+                              0x51, 0x75, 0x99, 0xbd, 0xe1, 0xe0, 0xdf, 0xde]
+        self.INTERESTING_COUNT = len(interesting_colors)
+        for i, c in enumerate(interesting_colors):
+            self.map_fg('i%d' % i, c)
     
     _ANSI_COLOR_LUT = ((0,0,0), (170,0,0), (0,170,0), (170,85,0),
                        (0,0,170), (170,0,170), (0,170,170), (170,170,170),
@@ -98,12 +113,63 @@ class FlamOut(object):
             gray = color - 232
             level = gray * 10 + 8
             return (level, level, level)
-    
+
+    _COLOR_HEXMAP = None
+    @property
+    def _color_hexmap(self):
+        if self._COLOR_HEXMAP is not None:
+            return self._COLOR_HEXMAP
+        chmap = self._COLOR_HEXMAP = {}
+        for index in range(256):
+            chmap[index] = self._crack_colorcode(index)
+        return chmap
+
+    def _parse_hexcolor(self, hexcolor):
+        '''@return (r, g, b) triple given a hex-color string'''
+        if hexcolor[0] == '#':
+            hexcolor = hexcolor[1:]
+        if len(hexcolor) == 6:
+            return (int(hexcolor[0:2], 16),
+                    int(hexcolor[2:4], 16),
+                    int(hexcolor[4:6], 16))
+        else:
+            def halp(s):
+                v = int(s, 16)
+                return v * 16 + v
+            return (halp(hexcolor[0]),
+                    halp(hexcolor[1]),
+                    halp(hexcolor[2]))
+
+    def hexcolor_to_colorcode(self, hexcolor):
+        bestcode = None
+        bestdist = 256 * 256 * 4
+        # desired red, green, blue
+        dr, dg, db = self._parse_hexcolor(hexcolor)
+        for code, crgb in self._color_hexmap.items():
+            # candidate red, green, blue
+            cr, cg, cb = crgb
+            dist = ((dr - cr) * (dr - cr) +
+                    (dg - cg) * (dg - cg) +
+                    (db - cb) * (db - cb))
+            if dist < bestdist:
+                bestcode = code
+                bestdist = dist
+        return bestcode
+
     def map_fg(self, name, code):
         self._cmap[name] = '\x1b[38;5;%dm' % code
 
+    def map_fg_hex(self, name, hexvalue):
+        self.map_fg(name, self.hexcolor_to_colorcode(hexvalue))
+
     def map_bg(self, name, code):
         self._cmap[name] = '\x1b[48;5;%dm' % code
+
+    def map_bg_hex(self, name, hexvalue):
+        self.map_bg(name, self.hexcolor_to_colorcode(hexvalue))
+
+    def map_control(self, name, bytestr):
+        self._cmap[name] = '\x1b[%sm' % (bytestr,)
 
     def i(self, indentAdjust):
         self._indentLevel += indentAdjust
@@ -173,7 +239,7 @@ class FlamOut(object):
             # TODO: also handle the wrapping as required
             ostr = indent + ostr.replace('\n', '\n' + indent)
         
-        print ostr
+        self.fout.write(ostr + '\n')
     
     def pp(self, o, label=None, indent=0):
         if label:
@@ -208,7 +274,7 @@ class FlamOut(object):
                     post ='}'
                 else:
                     pre= ' '
-                    post = ','                
+                    post = ','
                 if type(v) in (tuple, list, dict):
                     self('{n}%s{k}%s{n}:', pre, k)
                     self.i(1)
