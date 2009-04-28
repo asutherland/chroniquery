@@ -45,7 +45,7 @@ class FuncInfo(object):
         
         # prefer the compilationUnitDir if present, because it actually knows
         #  where (some?) headers came from 
-        self.interesting, self.depth, self.boring = self.cf._isComplexInteresting(
+        self.interesting, self.depth, self.boring, self.dumpInfo = self.cf._isComplexInteresting(
                             self.compilationUnitDir or self.compilationUnit,
                             self.containerPrefix, self.name)
         
@@ -62,21 +62,54 @@ class FuncInfo(object):
 
 
 class TypeInfo(object):
+    kind = None
+
     def loseTypedef(self):
+        '''
+        Helper function to pierce typedefs to the underlying type.
+        '''
         return self
+
+class DummyTypeInfo(TypeInfo):
+    name = 'Root Dummy'
+    size = 0
+
+    def populate(self, *args):
+        return None
+
+DummyType = DummyTypeInfo()
 
 class PointerTypeInfo(TypeInfo):
     def __init__(self, innerType, size):
         self.innerType = innerType
         self.size = size
     
+    def populate(self, cf, mem):
+        val = cf._extractPlatInt(mem)
+        if self.innerType.loseTypedef().kind == 'char':
+            return 'wanna deref ' + hex(val)
+        return hex(val)
+
     def __str__(self):
         return '*%s' % (self.innerType,)
 
 class ArrayTypeInfo(TypeInfo):
     def __init__(self, innerType, length):
         self.innerType = innerType
-        self.length = length
+        # the dynamic stuff would be insanely hard!
+        self.length = length or 0
+
+    @property
+    def size(self):
+        return self.length * self.innerType.loseTypedef().size
+
+    def populate(self, cf, mem):
+        realType  = self.innerType.loseTypedef()
+        innerSize = realType.size
+        result = []
+        for offset in range(0, self.length * innerSize, innerSize):
+            result.append(realType.populate(mem[offset:offset+innerSize]))
+        return result
     
     def __str__(self):
         return '%s[%s]' % (self.innerType, self.length)
@@ -107,6 +140,9 @@ class FieldTypeInfo(TypeInfo):
     
     @property
     def size(self):
+        '''
+        Returns the size of this field, losing any typedefs in the way.
+        '''
         if self._size:
             return self._size
         return self.realType.size
@@ -119,6 +155,9 @@ class FieldTypeInfo(TypeInfo):
     
     @property
     def realType(self):
+        '''
+        Returns the type of the field with any typedefs lost.
+        '''
         if self.fieldType is None:
             self.fieldType = self.cf.getTypeInfo(self.typeKey)
         return self.fieldType.loseTypedef()
@@ -128,21 +167,43 @@ class FieldTypeInfo(TypeInfo):
         return '%s' % (self.name,)
 
 class StructTypeInfo(TypeInfo):
-    def __init__(self, name, kind):
+    def __init__(self, name, kind, size):
         self.name = name
         self.kind = kind
+        self.size = size
         self.fields = []
         self.fieldsByName = {}
+        self.parentClassFields = []
     
     def addField(self, field):
         self.fields.append(field)
         self.fieldsByName[field.name] = field
     
+    def addParentClassField(self, field):
+        field.name = field.realType.name
+        self.parentClassFields.append(field)
+
     def getField(self, name):
         return self.fieldsByName[name]
-    
+
+    def populate(self, cf, mem, intoDict=None):
+        if intoDict is not None:
+            rdict = intoDict
+        else:
+            rdict = {}
+
+        for parentField in self.parentClassFields:
+            parentField.realType.populate(cf,
+                mem[parentField.offset:parentField.offset+parentField.size],
+                rdict)
+        for field in self.fields:
+            rdict[field.name] = field.realType.populate(cf,
+                                    mem[field.offset:field.offset+field.size])
+
+        return rdict
+
     def __str__(self):
-        return '{%s %s %s}' % (self.kind, self.name,
+        return '{%s %s: %s}' % (self.kind, self.name,
                                ', '.join(map(str, self.fields)))
 
 class AnnotationTypeInfo(TypeInfo):
@@ -152,8 +213,8 @@ class AnnotationTypeInfo(TypeInfo):
 
     # meh, annotations are stupid, lose them
     def loseTypedef(self):
-        return self.innerType
-    
+        return self.innerType.loseTypedef()
+
     def __str__(self):
         return '%s %s' % (self.annotation, self.innerType)
 
@@ -162,6 +223,9 @@ class NativeTypeInfo(TypeInfo):
         self.name = name
         self.signed = signed
         self.size = size
+
+    def populate(self, cf, mem):
+        return cf._extractPlatInt(mem)
     
     def __str__(self):
         return '%s%s%d' % ((self.signed is None) and ' ' or
@@ -229,6 +293,16 @@ class Chronifer(object):
                 boring = self.config.getboolean(sect, 'boring')
             else:
                 boring = None
+
+            dump_meta = {}
+            for key, value in self.config.items(sect):
+                if key.startswith('dump_'):
+                    name = key[5:]
+                    if value.lower() == 'true':
+                        value = True
+                    elif value.lower() == 'false':
+                        value = False
+                    dump_meta[name] = value
             
             # boring implies not interesting, but not boring does not imply
             #  interesting.
@@ -236,7 +310,7 @@ class Chronifer(object):
                 depth = 0
                 interesting = False
                 
-            return (interesting, depth, boring)
+            return (interesting, depth, boring, dump_meta)
             
         
         for section in self.config.sections():
@@ -258,6 +332,7 @@ class Chronifer(object):
         interesting = self._defaultInteresting
         depth = self._defaultDepth
         boring = False
+        dumpInfo = None
         
         # non-existent paths are inherently boring
         if path is None:
@@ -269,17 +344,19 @@ class Chronifer(object):
         for path_part in path.split('/'): # nuts to windows
             cur_path = os.path.join(cur_path, path_part)
             if cur_path in self._interestingPaths:
-                dirInteresting, dirDepth, dirBoring = self._interestingPaths[cur_path]
+                dirInteresting, dirDepth, dirBoring, dirDump = self._interestingPaths[cur_path]
                 if dirInteresting is not None:
                     interesting = dirInteresting
                 if dirDepth is not None:
                     depth = dirDepth
                 if dirBoring is not None:
                     boring = dirBoring
+                if len(dirDump):
+                    dumpInfo = dirDump
         
         # then containers
         if containerPrefix in self._interestingContainers:
-            contInteresting, contDepth, contBoring = \
+            contInteresting, contDepth, contBoring, contDump = \
                     self._interestingContainers[containerPrefix]
             if contInteresting is not None:
                 interesting = contInteresting
@@ -287,20 +364,12 @@ class Chronifer(object):
                 depth = contDepth
             if contBoring is not None:
                 boring = contBoring
-        
+            if len(contDump):
+                dumpInfo = contDump
+
         # then function name
-        if containerPrefix in self._interestingContainers:
-            contInteresting, contDepth, contBoring = \
-                    self._interestingContainers[containerPrefix]
-            if contInteresting is not None:
-                interesting = contInteresting
-            if contDepth is not None:
-                depth = contDepth
-            if contBoring is not None:
-                boring = contBoring
-        
         if funcName in self._interestingFunctions:
-            funcInteresting, funcDepth, funcBoring = \
+            funcInteresting, funcDepth, funcBoring, funcDump = \
                     self._interestingFunctions[funcName];
             if funcInteresting is not None:
                 interesting = funcInteresting
@@ -308,8 +377,10 @@ class Chronifer(object):
                 depth = funcDepth
             if funcBoring is not None:
                 boring = funcBoring
+            if len(funcDump):
+                dumpInfo = funcDump
                 
-        return interesting, depth, boring
+        return interesting, depth, boring, dumpInfo
     
     def _evilNormalizePath(self, path, relativeTo=None):
         '''
@@ -386,6 +457,21 @@ class Chronifer(object):
         self._pc_reg = 'pc'
         self._thread_reg = 'thread'
     
+    def _extractPlatInt(self, membytes):
+        '''
+        Given some already-decoded memory bytes, do the endian-thing on them.
+        '''
+        lbytes = len(membytes)
+        if lbytes == 1:
+            return ord(membytes)
+        elif lbytes == 2:
+            return struct.unpack('<H', membytes)[0]
+        elif lbytes == 4:
+            return struct.unpack('<I', membytes)[0]
+        else:
+            return struct.unpack('<Q', membytes)[0]
+
+
     def _decodePlatInt(self, sval):
         '''
         Turn a platform-specific int into a python integer, handling endian
@@ -1003,6 +1089,10 @@ class Chronifer(object):
         return self._fabFunction(finfo)
     
     def readMem(self, tstamp, address, length):
+        '''
+        @return a string of the given length from the memory block starting at
+        address at the given time stamp.
+        '''
         dstr = '0' * length * 2
         for dvalue in self.c.ssa('readMem',
                             TStamp=tstamp,
@@ -1061,6 +1151,35 @@ class Chronifer(object):
         return self._decodePlatInt(dvalue['bytes'])
 
     
+    def getRawValue(self, tstamp, valKey, typeKey, byteSize=0):
+        '''
+        Given a valKey and typeKey at a timestamp, retrieve the actual data
+        associated with the value.  This is used by getValue and
+        getRawParameters.
+        '''
+        val = 0
+        if not byteSize:
+            byteSize = self._ptr_size
+        
+        lvalues = self.c.ssa('getLocation',
+                             TStamp=tstamp,
+                             valKey=valKey,
+                             typeKey=typeKey,
+                             )
+        for lvalue in lvalues:
+            #print 'LVALUE', lvalue
+            if 'valueBitStart' in lvalue:
+                if lvalue.get('register'):
+                    val = self.getRegister(tstamp, lvalue['register'])
+                elif lvalue.get('address'):
+                    if byteSize in self._int_sizes:
+                        val = self.readInt(tstamp, lvalue['address'], byteSize)
+                    else:
+                        val = self.readMem(tstamp, lvalue['address'], byteSize)
+                break
+        return val
+
+
     def getValue(self, tstamp, valKey, typeKey, endTStamp=None):
         '''
         Given a timestamp, value key, and type key, compute a user-readable
@@ -1115,25 +1234,8 @@ class Chronifer(object):
                 break
         #print 'INDIRECTIONS', indirections
         #print 'kind', kind, 'typeName', typeName, 'subtype', subtype, 'ptrDepth', pointerDepth
-        val = 0
-        
-        lvalues = self.c.ssa('getLocation',
-                             TStamp=tstamp,
-                             valKey=valKey,
-                             typeKey=typeKey,
-                             )
-        for lvalue in lvalues:
-            #print 'LVALUE', lvalue
-            if 'valueBitStart' in lvalue:
-                if lvalue.get('register'):
-                    val = self.getRegister(tstamp, lvalue['register'])
-                elif lvalue.get('address'):
-                    byteSize = tinfo.get('byteSize', self._ptr_size)
-                    if byteSize in self._int_sizes:
-                        val = self.readInt(tstamp, lvalue['address'], byteSize)
-                    else:
-                        val = self.readMem(tstamp, lvalue['address'], byteSize)
-                break
+
+        val = self.getRawValue(tstamp, valKey, typeKey, tinfo.get('byteSize', 0))
         
         if kind == 'pointer':
             # if it's a native-ish type we know how to print and the depth is
@@ -1201,6 +1303,41 @@ class Chronifer(object):
     def getParametersAsDict(self, *args, **kwargs):
         kwargs['noIndirection'] = True
         return dict(self.getParameters(*args,**kwargs))
+
+    def getRawParameters(self, tstamp, func):
+        '''
+        An attempt to expose getParameters in a more extensible fashion with
+        less of the getValue pseudo-magic happening.  This will end up being
+        refactored, but should end up cleaner...
+
+        @return a list where each element is a tuple of the form (name, typeInfo,
+            value)
+        '''
+        if func is None:
+            func = self.findRunningFunction(tstamp)
+
+        # find the timestamp at which the prologue has been executed, it
+        #  may be stashing parameters in locals (which may or may not be
+        #  dumb)
+        if func.prologueEnd:
+            prologueEndTStamp = self.scanInstructionExecuted(tstamp, func.prologueEnd)
+        else:
+            # this is sad, but there's not a lot to do
+            prologueEndTStamp = tstamp
+
+        result = []
+        for pinfo in self.c.ssm('getParameters', TStamp=prologueEndTStamp):
+            if 'name' in pinfo:
+                # retrieve the actual value associated
+                typeKey = pinfo['typeKey']
+                typeInfo = self.getTypeInfo(typeKey)
+                value = self.getRawValue(prologueEndTStamp,
+                                         pinfo['valKey'], typeKey,
+                                         typeInfo.loseTypedef().size)
+                
+                result.append((pinfo['name'], typeInfo, value))
+
+        return result
     
     def getLocals(self, tstamp):
         c = self.c
@@ -1231,6 +1368,8 @@ class Chronifer(object):
             if 'partial' in tinfo:
                 tinfo = self.c.sss('lookupGlobalType', name=tinfo['name'],
                                    typeKey=typeKey)
+                tinfo = self.c.sss('lookupType', typeKey=tinfo['typeKey'])
+                typeKey = tinfo['typeKey']
             
             kind = tinfo.get('kind')
             if kind == 'annotation':
@@ -1246,7 +1385,8 @@ class Chronifer(object):
                 ti = TypedefTypeInfo(tinfo['name'],
                                      self.getTypeInfo(tinfo['innerTypeKey']))
             elif kind == 'struct':
-                ti = StructTypeInfo(tinfo.get('name'), tinfo['structKind'])
+                ti = StructTypeInfo(tinfo.get('name'), tinfo['structKind'],
+                                    tinfo['byteSize'])
                 # cache structs immediately since they can be self-recursive
                 self._typeCache[typeKey] = ti
                 for finfo in tinfo.get('fields'):
@@ -1254,12 +1394,16 @@ class Chronifer(object):
                                        finfo.get('byteOffset'),
                                        finfo.get('byteSize'),
                                        finfo['typeKey'])
-                    ti.addField(fi)
+                    if finfo.get('isSubobject'):
+                        # load the parent field dude and steal his crap
+                        ti.addParentClassField(fi)
+                    else:
+                        ti.addField(fi)
             elif kind == 'array':
                 ti = ArrayTypeInfo(self.getTypeInfo(tinfo['innerTypeKey']),
                                    tinfo.get('length'))
             elif kind == 'function':
-                print 'Ignoring function type.'
+                #print 'Ignoring function type.'
                 ti = None
             elif kind in ('int', 'float'):
                 ti = NativeTypeInfo(kind, tinfo.get('signed'),
@@ -1268,10 +1412,10 @@ class Chronifer(object):
                 ti = None
             elif kind is None and 'progress' in tinfo:
                 # ignore things that are just about progress
-                ti = None
+                ti = DummyType
                 continue
             else:
-                ti = None
+                ti = Dummytype
                 print 'UNKNOWN!', tinfo
                 typeName = tinfo.get('name')
                 #print 'TINFO', tinfo
@@ -1316,7 +1460,14 @@ class Chronifer(object):
         
         return val
         
-        
+    def getStructValue(self, tstamp, addr, structType):
+        '''
+        Populate a (nested) dictionary for a structure type at the given
+        timestamp and memory address.
+        '''
+        realStruct = structType.loseTypedef()
+        mem = self.readMem(tstamp, addr, realStruct.size)
+        return realStruct.populate(self, mem)
 
     def getSourceLines(self, source_line):
         '''

@@ -303,6 +303,26 @@ class Chronisole(object):
                     pout('{s}cpp {cn}%s{fn}%s', subfunc.containerPrefix, subfunc.name)
                 pout.i(2)
                 
+                # do any dumping!
+                if subfunc.dumpInfo:
+                    for paramName, paramType, paramVal in self.cf.getRawParameters(
+                            subBeginTStamp, subfunc):
+                        if subfunc.dumpInfo.get(paramName):
+                            # and we're assuming a structure, otherwise what's the
+                            #  point.  (but we realy should not assume this)
+                            structType = paramType.loseTypedef().innerType
+                            sdict = self.cf.getStructValue(subBeginTStamp, paramVal,
+                                                           structType)
+                            dumpParam = subfunc.dumpInfo[paramName]
+                            if dumpParam is True:
+                                odict = sdict
+                            else:
+                                odict = {}
+                                for fieldName in dumpParam.split(','):
+                                    fieldName = fieldName.strip()
+                                    odict[fieldName] = sdict.get(fieldName)
+                            pout.pp(odict)
+
                 rel_max_depth = max(max_depth, depth + subfunc.depth)
                 if (subfunc.interesting or depth < rel_max_depth):
                     helpy(subBeginTStamp, subEndTStamp, depth + 1, rel_max_depth)

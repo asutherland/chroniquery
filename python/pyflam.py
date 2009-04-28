@@ -257,33 +257,22 @@ class FlamOut(object):
                     pre= ' '
                     post = ','
                 if type(v) in (tuple, list, dict):
-                    self.i(1)
+                    self.i(2)
                     self.pp(v)
-                    self.i(-1)
+                    self.i(-2)
                 else:
                     self('{n}%s{v}%s{n}%s', pre, v, post)
         elif type(o) in (dict,):
             i = 0
             last = len(o) - 1
-            for k, v in o.items():
-                if i == 0:
-                    pre = '{'
-                    post = (i != last) and ',' or '}'
-                elif i == last:
-                    pre = ' '
-                    post ='}'
-                else:
-                    pre= ' '
-                    post = ','
+            for k, v in sorted(o.items()):
                 if type(v) in (tuple, list, dict):
-                    self('{n}%s{k}%s{n}:', pre, k)
-                    self.i(1)
+                    self('{k}%s{n}:', k)
+                    self.i(4)
                     self.pp(v)
-                    self.i(-1)
-                    if i == last:
-                        self('{n}%s', post)
+                    self.i(-4)
                 else:
-                    self('{n}%s{k}%s{n}: {v}%s{n}%s', pre, k, v, post)
+                    self('{k}%s{n}: {v}%s', k, v)
                 i += 1
 
         else:
