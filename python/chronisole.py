@@ -209,6 +209,12 @@ class Chronisole(object):
             last_locals = locals
     
     def trace(self, function_names):
+        '''
+        For each function in function names, trace the execution of the
+        function, which mainly means tracking functions it in turn calls.
+        No attempt is made at timeline integration of the multiple function
+        names provided.
+        '''
         for func_name in function_names:
             func = self.cf.lookupGlobalFunction(func_name)
             if func is None:
@@ -219,6 +225,10 @@ class Chronisole(object):
                 self.trace_function(func)
             
     def show_mmap(self):
+        '''
+        Show all of the memory mapping events that happen in the program, ever.
+        Debugging functionality, mainly, which readchron.py can also sorta do.
+        '''
         for mmap in self.cf.scanMemMap(self.cf._beginTStamp,
                                        self.cf._endTStamp):
             pout.pp(mmap)
@@ -244,6 +254,15 @@ class Chronisole(object):
         return ', '.join(str_parts)
     
     def trace_function(self, func, beginTStamp=None, endTStamp=None):
+        '''
+        The legwork for the trace() command; given a function and an optional
+        constraining timestamp region, finds all invocation of the functions in
+        the region and (potentially) traces into calls made by the function.
+
+        Whether functions are recursed into depends on the chroniquery config
+        file that marks folders/files/classes/functions/etc. as interesting or
+        boring and what not.
+        '''
         def helpy(beginTStamp, endTStamp, depth=2, max_depth=None):
             # iterate over the calls found between the given start/end
             #  timestamps, which have been bounded to be inside our parent
@@ -340,6 +359,12 @@ class Chronisole(object):
             pout.i(-2)
     
     def jstrace(self):
+        '''
+        SpiderMonkey JS-engine and XPConnect aware tracing support.  Because we
+        have the type information available, our offsets are generally reliable,
+        but we are still strongly dependent on the spidermonkey JS
+        implementation.
+        '''
         contexts = {}
         self._jsFuncCache = {}
         
@@ -744,6 +769,21 @@ class Chronisole(object):
                 wfunc(beginTStamp, endTStamp, action, args, **kwargs)
     
     def _diss(self, timestamp, address=None, instructions=1, showRelTime=False):
+        '''
+        Disassemble the code that was executed at a timestamp, optionally
+        listing subsequent opcodes and labeling them with the relative first
+        timestamps at which they will be executed in the future.
+
+        @param timestamp The execution timestamp you want a disassembly of.
+        @param address Optional address of first instruction to disassemble.  If
+            left unspecified (or None), the PC at timestamp is used.  Don't just
+            randomly guess an address; x86 opcodes are variable length and don't
+            like that.  In general, you would only pass a value here if you have
+            already retrieved the PC and want to save a redundant fetch.
+        @param instructions Number of instructions to disassemble.
+        @param showRelTime If True, provides relative timestamp information as
+            well as the stack pointer and frame pointer at that time.
+        '''
         if address is None:
             address = self.cf.getPC(timestamp)
         # technically, I think 16 is the right number, but that seems rare.
@@ -765,6 +805,9 @@ class Chronisole(object):
                  op_reltime)
     
     def _showMem(self, timestamp, address, size, block_size=16):
+        '''
+        Do a hex dump of a memory block (at a given time) (at a given block).
+        '''
         after_byte = address + size
         mem = self.cf.readMem(timestamp, address, size)
         for base in range(address - (address % block_size), after_byte, block_size):
@@ -784,14 +827,31 @@ class Chronisole(object):
         
         
     
-    def dump_stack(self, tstamp, pre=8, post=8):
+    def dump_stack(self, tstamp, pre=8, post=8, time_window=8):
+        '''
+        Dump the memory around the stack pointer at a given time-stamp,
+        annotating each memory address with the relative time stamps in the time
+        window when the stack pointer had that value.
+
+        This was a debugging tool to help dealing with twiddly constants and
+        understanding what chronicle-recorder's model is.
+
+        @param tstamp The timestamp at which you care about the stack pointer.
+        @param pre The number of pointer sizes prior to the stack pointer to
+            display.
+        @param post The number of pointer sizes after the stack pointer to
+            display.
+        @param time_window The number of timestamps before and after the
+            provided timestamp to check for their stack pointer value for
+            display annotation purposes.
+        '''
         mappy = {}
-        for delta in range(-8, 8):
+        for delta in range(-time_window, time_window):
             rsp = self.cf.getSP(tstamp + delta)
             mappy.setdefault(rsp, []).append(delta)
         
         sp = self.cf.getSP(tstamp)
-        for address in range(sp - pre*self.cf._ptr_size, sp + (pre+1)*self.cf._ptr_size, self.cf._ptr_size):
+        for address in range(sp - pre*self.cf._ptr_size, sp + (post+1)*self.cf._ptr_size, self.cf._ptr_size):
             val = self.cf.readInt(tstamp, address)
             if address == sp:
                 pout('{g}%x %x {.20}%s', address, val, mappy.get(address))
@@ -799,6 +859,13 @@ class Chronisole(object):
                 pout('{n}%x %x {.20}%s', address, val, mappy.get(address))
 
     def showBackTrace(self, tstamp, depth=0):
+        '''
+        Perform a back trace at the given time stamp.
+
+        @param tstamp The timestamp at which to run the backtrace.
+        @param depth Not for you!  This function is recursive and passes the
+            depth to itself for labeling purposes.
+        '''
         call = self.cf.findStartOfCall(tstamp)
         if call is None:
             return
@@ -829,6 +896,13 @@ class Chronisole(object):
         
 
     def find_calls_with_return_value(self):
+        '''
+        Command that tries to find invocations of user-specified functions or
+        code in libraries that have user-specified interesting values.
+
+        This works out okay as long as you know generally who is the set of
+        functions that may be betraying you.
+        '''
         interesting_values = set(self.values)
         
         ranges = []
