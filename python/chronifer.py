@@ -1492,7 +1492,7 @@ class Chronifer(object):
             func = self.findRunningFunction(tstamp)
         
         if func.typeKey is None:
-            return None
+            return None, False
         
         retTypeInfo = self.getTypeInfo(func.typeKey)
         val = self.getRegister(tstamp, self._retval_reg)
