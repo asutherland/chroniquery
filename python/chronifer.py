@@ -84,11 +84,11 @@ class PointerTypeInfo(TypeInfo):
         self.innerType = innerType
         self.size = size
     
-    def populate(self, cf, mem):
+    def populate(self, cf, tstamp, mem):
         val = cf._extractPlatInt(mem)
         if self.innerType.loseTypedef().kind == 'char':
-            return 'wanna deref ' + hex(val)
-        return hex(val)
+            return self.cf.readCString(tstamp, val)
+        return val
 
     def __str__(self):
         return '*%s' % (self.innerType,)
@@ -103,7 +103,7 @@ class ArrayTypeInfo(TypeInfo):
     def size(self):
         return self.length * self.innerType.loseTypedef().size
 
-    def populate(self, cf, mem):
+    def populate(self, cf, tstamp, mem):
         realType  = self.innerType.loseTypedef()
         innerSize = realType.size
         result = []
@@ -186,19 +186,23 @@ class StructTypeInfo(TypeInfo):
     def getField(self, name):
         return self.fieldsByName[name]
 
-    def populate(self, cf, mem, intoDict=None):
+    def populate(self, cf, tstamp, mem, intoDict=None):
         if intoDict is not None:
             rdict = intoDict
         else:
             rdict = {}
 
         for parentField in self.parentClassFields:
-            parentField.realType.populate(cf,
+            parentField.realType.populate(cf, tstamp,
                 mem[parentField.offset:parentField.offset+parentField.size],
                 rdict)
         for field in self.fields:
-            rdict[field.name] = field.realType.populate(cf,
+            rdict[field.name] = field.realType.populate(cf, tstamp,
                                     mem[field.offset:field.offset+field.size])
+
+        i_am_pretty, pretty_me = cf.prettyPlease(self, tstamp, rdict)
+        if i_am_pretty: # oh, so pretty!
+            return pretty_me
 
         return rdict
 
@@ -224,7 +228,7 @@ class NativeTypeInfo(TypeInfo):
         self.signed = signed
         self.size = size
 
-    def populate(self, cf, mem):
+    def populate(self, cf, tstamp, mem):
         return cf._extractPlatInt(mem)
     
     def __str__(self):
@@ -233,6 +237,30 @@ class NativeTypeInfo(TypeInfo):
                            self.name, self.size)
 
 VoidPointerType = PointerTypeInfo(NativeTypeInfo('void', None, 0), 0)
+
+class PrettierRegistry(object):
+    def __init__(self):
+        self.prettier_map = {}
+        self.prettier_regexes = []
+
+    def gimme_prettier_for_typename(self, typeName):
+        if typeName in self.prettier_map:
+            return self.prettier_map[typeName]
+        for regex, prettier_class in self.prettier_regexes:
+            if regex.match(typeName):
+                return prettier_class
+        return None
+
+    def register_prettiers(self, groupName, prettiers):
+        for prettier_class in prettiers:
+            if prettier_class.typename:
+                self.prettier_map[prettier_class.typename] = prettier_class
+            elif prettier_class.typepattern:
+                self.prettier_regexes.append((prettier_class.typepattern,
+                                              prettier_class))
+            
+
+PrettierRegistry = PrettierRegistry()
 
 class Chronifer(object):
     '''
@@ -268,6 +296,8 @@ class Chronifer(object):
         self._instrCache = {}
         self._funcCache = {}
         self._typeCache = {}
+
+        self._prettierCache = {}
 
     def _initInterestingLogic(self):
         self._interestingPaths = {}
@@ -336,7 +366,7 @@ class Chronifer(object):
         
         # non-existent paths are inherently boring
         if path is None:
-            return interesting, depth, False, #True
+            return interesting, depth, True, {}
         
         # paths first
         cur_path = ''
@@ -518,6 +548,29 @@ class Chronifer(object):
                         None, None, None, None, None)
         return func
     
+    def prettyPlease(self, typeInfo, tstamp, val):
+        '''
+        @return (did we pretty it, prettified value)
+        '''
+        typeName = typeInfo.name;
+        if typeName in self._prettierCache:
+            prettier = self._prettierCache[typeName]
+        else:
+            prettier_class = PrettierRegistry.gimme_prettier_for_typename(typeName)
+            if prettier_class is None:
+                prettier = None
+            elif prettier_class.basetype and prettier_class.basetype in self._prettierCache:
+                prettier = self._prettierCache[prettier_class.basetype]
+            else:
+                prettier = prettier_class(self)
+                self._prettierCache[prettier_class.basetype] = prettier
+            self._prettierCache[typeName] = prettier
+
+        if prettier:
+            return prettier, prettier.to_better_rep(tstamp, val)
+        else:
+            return False, None
+
     def lookupGlobalFunction(self, func_name):
         finfo = self.c.sss('lookupGlobalFunctions',
                            name=func_name)
@@ -1129,6 +1182,17 @@ class Chronifer(object):
                 rstr += dstr
                 maxlength -= probesize
 
+    def readPascalUtf8String(self, tstamp, address, length):
+        '''
+        Read a utf-8 string of the given length from address.
+        @param length The number of characters in the string.
+        '''
+        dstr = self.readMem(tstamp, address, length)
+        try:
+            return dstr.decode('utf-8')
+        except:
+            return 'corrupt-very-sad'
+
     def readPascalUniString(self, tstamp, address, length):
         '''
         Read a unicode string of the given length from address.
@@ -1430,36 +1494,16 @@ class Chronifer(object):
         if func.typeKey is None:
             return None
         
-        for tinfo in self.c.ssa('lookupType', typeKey=func.typeKey):
-            kind = tinfo.get('kind')
-            if kind == 'pointer':
-                # okay, what are we pointing at...
-                if 'innerTypeKey' in tinfo:
-                    for stinfo in self.c.ssa('lookupType', typeKey=tinfo['innerTypeKey']):
-                        if 'kind' in stinfo:
-                            if stinfo['kind'] == 'pointer':
-                                subtype = 'pp'
-                            else:
-                                subtype = stinfo.get('name', 'unknown')
-                else:
-                    subtype = 'unknown'
-                break
-            else:
-                typeName = tinfo.get('name')
-                #print 'TINFO', tinfo
-                break
-
+        retTypeInfo = self.getTypeInfo(func.typeKey)
         val = self.getRegister(tstamp, self._retval_reg)
-            
-        if kind == 'pointer':
-            #print 'deref-ing pointer'
-            if subtype == 'char':
-                val = self.readCString(tstamp, val)
-        elif kind == 'int' and typeName == 'bool':
-            val = bool(val)
-        
-        return val
-        
+
+        # XXX we need a boolean prettier.  we got rid of that dude :(
+        i_am_pretty, pretty = self.prettyPlease(retTypeInfo, tstamp, val)
+        if i_am_pretty:
+            return pretty, i_am_pretty.is_exceptional(val)
+        else:
+            return val, False
+
     def getStructValue(self, tstamp, addr, structType):
         '''
         Populate a (nested) dictionary for a structure type at the given
@@ -1467,7 +1511,7 @@ class Chronifer(object):
         '''
         realStruct = structType.loseTypedef()
         mem = self.readMem(tstamp, addr, realStruct.size)
-        return realStruct.populate(self, mem)
+        return realStruct.populate(self, tstamp, mem)
 
     def getSourceLines(self, source_line):
         '''

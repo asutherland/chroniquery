@@ -46,10 +46,13 @@ class FlamOut(object):
         self.map_fg('bn', 0xff)
         # error
         self.map_fg('e', 124)
+        self.map_bg('bge', 0x34)
         # warning
         self.map_fg('w', 220)
+        self.map_bg('bgw', 0x03)
         # good
         self.map_fg('g',  46)
+        self.map_bg('bgg', 0x16)
         
         # subtle
         self.map_fg('s', 0xee)
@@ -263,8 +266,6 @@ class FlamOut(object):
                 else:
                     self('{n}%s{v}%s{n}%s', pre, v, post)
         elif type(o) in (dict,):
-            i = 0
-            last = len(o) - 1
             for k, v in sorted(o.items()):
                 if type(v) in (tuple, list, dict):
                     self('{k}%s{n}:', k)
@@ -272,11 +273,84 @@ class FlamOut(object):
                     self.pp(v)
                     self.i(-4)
                 else:
+                    if type(v) in (int, long):
+                        v = hex(v)
                     self('{k}%s{n}: {v}%s', k, v)
-                i += 1
 
         else:
             self('%s', str(o))
+
+    DIFF_REMOVED = 0
+    DIFF_ADDED = 1
+    # the thing changed (only applies to non-dicts)
+    DIFF_CHANGED = 2
+    # a dict changed, the value is another diff dict
+    DIFF_DOWNDELTA = 3
+    def dictdiff(self, a, b):
+        '''
+        Diff two dictionaries, returning a delta-dictionary whose values are
+        always tuples of the form (DIFF_* tag, value).
+        '''
+        d = {}
+        for key, aval in a.items():
+            bval = b.get(key)
+            if aval is None:
+                if bval is None:
+                    # no change...
+                    pass
+                else:
+                    d[key] = (self.DIFF_ADDED, bval)
+            elif bval is None:
+                d[key] = (self.DIFF_REMOVED, bval)
+            else:
+                # they are both non-None, check if they are simple or rich
+                if type(aval) in (dict,):
+                    # rich!
+                    subd = self.dictdiff(aval, bval)
+                    if subd:
+                        d[key] = (self.DIFF_DOWNDELTA, subd)
+                elif aval == bval:
+                    pass
+                else:
+                    # just show the new value!
+                    d[key] = (self.DIFF_CHANGED, bval)
+                    
+        # handle things b has that a does not
+        for key, bval in b.items():
+            if key not in a:
+                d[key] = (self.DIFF_ADDED, bval)
+        return d
+
+    def ppdiff(self, d):
+        '''
+        Pretty-print a dictdiff
+        '''
+        for k, tagtupe in sorted(d.items()):
+            tag, v = tagtupe
+
+            if tag == self.DIFF_DOWNDELTA:
+                self('{k}%s{n}:', k)
+                self.i(4)
+                self.ppdiff(v)
+                self.i(-4)
+            else:
+                if tag == self.DIFF_ADDED:
+                    code = 'g'
+                elif tag == self.DIFF_REMOVED:
+                    code = 'b'
+                else: # tag == self.DIFF_MODIFIED:
+                    code = 'w'
+
+                # can't be a dict...
+                if type(v) in (tuple, list):
+                    self('{' + code + '}{k}%s{n}:', k)
+                    self.i(4)
+                    self.pp(v)
+                    self.i(-4)
+                else:
+                    if type(v) in (int, long):
+                        v = hex(v)
+                    self('{' + code +'}%s{n}: {v}%s', k, v)
 
     def v(self, msg, *args, **kwargs):
         if self._verbose:

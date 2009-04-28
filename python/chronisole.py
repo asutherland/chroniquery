@@ -85,6 +85,8 @@ class Chronisole(object):
         self.file_per_func_invoc = soleargs.get('file_per_func_invoc', False)
         
         self.dis = chrondis.ChronDis(self.cf._reg_bits)
+
+        self.last_dict_for_diff = {}
     
     def run(self):
         if self.action == 'show':
@@ -237,10 +239,10 @@ class Chronisole(object):
                                        self.cf._endTStamp):
             pout.pp(mmap)
     
-    def _formatValue(self, value):
+    def _formatValue(self, value, alreadyPrettied=False):
         if type(value) in (int, long):
             v = hex(value)
-        elif isinstance(value, basestring):
+        elif isinstance(value, basestring) and not alreadyPrettied:
             v = repr(value)
         else:
             v = str(value)
@@ -290,12 +292,14 @@ class Chronisole(object):
                     continue
                 
                 if self.call_details:
-                    pout('{s}cpp {cn}%s{fn}%s {.20}{w}%s {.30}{n}%s',
+                    retval, retval_exceptional = self.cf.getReturnValue(subEndTStamp, subfunc)
+                    pout('{s}cpp {cn}%s{fn}%s {.50}{bn}' +
+                         (retval_exceptional and '{bge}%s{-bg}' or '%s') +
+                         ' {.60}{n}%s',
                          subfunc.containerPrefix, subfunc.name,
                          # it's possible the call never returned due to abort-death. (sad!)
                          subEndTStamp and
-                             self._formatValue(self.cf.getReturnValue(subEndTStamp, subfunc)) or
-                             "n/a",
+                             self._formatValue(retval, True) or "n/a",
                          self._formatParameters(self.cf.getParameters(subBeginTStamp, subfunc,
                                                                       subEndTStamp)),
                          )
@@ -321,7 +325,15 @@ class Chronisole(object):
                                 for fieldName in dumpParam.split(','):
                                     fieldName = fieldName.strip()
                                     odict[fieldName] = sdict.get(fieldName)
-                            pout.pp(odict)
+
+                            # cache for diffing purposes...
+                            uniqueCacheName = subfunc.name
+                            if uniqueCacheName in self.last_dict_for_diff:
+                                last_dict = self.last_dict_for_diff[uniqueCacheName]
+                                pout.ppdiff(pout.dictdiff(last_dict, odict))
+                            else:
+                                pout.pp(odict)
+                            self.last_dict_for_diff[uniqueCacheName] = odict
 
                 rel_max_depth = max(max_depth, depth + subfunc.depth)
                 if (subfunc.interesting or depth < rel_max_depth):
@@ -335,12 +347,14 @@ class Chronisole(object):
             if func.boring:
                 return
             if self.call_details:
-                pout('{s}cpp {cn}%s{fn}%s {.20}{w}%s {.30}{n}%s',
+                retval, retval_exceptional = self.cf.getReturnValue(endTStamp, func)
+                pout('{s}cpp {cn}%s{fn}%s {.50}{bn}' +
+                     (retval_exceptional and '{bge}%s{-bg}' or '%s') +
+                     ' {.60}{n}%s',
                      func.containerPrefix, func.name,
                      # it's possible the call never returned due to abort-death. (sad!)
                      endTStamp and
-                         self._formatValue(self.cf.getReturnValue(endTStamp, func)) or
-                         "n/a",
+                         self._formatValue(retval, True) or "n/a",
                      self._formatParameters(self.cf.getParameters(beginTStamp, func,
                                                                   endTStamp)),
                      )
@@ -362,9 +376,12 @@ class Chronisole(object):
             parameters = self.cf.getParameters(beginTStamp, func, endTStamp)
             if self.file_per_func_invoc:
                 pout.linkToPermutation(beginTStamp)
-            pout('{fn}%s {.20}{w}%s {.30}{n}%s',
-                 func.name,
-                 self._formatValue(self.cf.getReturnValue(endTStamp, func)),
+            retval, retval_exceptional = self.cf.getReturnValue(endTStamp, func)
+            pout('{cn}%s{fn}%s {.50}{bn}' +
+                 (retval_exceptional and '{bge}%s{-bg}' or '%s') +
+                 ' {.60}{n}%s',
+                 func.containerPrefix, func.name,
+                 self._formatValue(retval, True),
                  self._formatParameters(parameters),
                  )
             if self.file_per_func_invoc:
