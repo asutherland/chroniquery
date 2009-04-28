@@ -155,7 +155,7 @@ class Chronisole(object):
             if expr_len in (4, 8):
                 val = hex(self.cf.readInt(tstamp, ptr_val, expr_len))
             else:
-                val = self.cf.readMem(tstamp, ptr_val, int(expr_len))            
+                val = self.cf.readMem(tstamp, ptr_val, int(expr_len))
             pout('{k}%s{n}: {v}%s', expr, val)
     
     def watch_before(self, beginTStamp, endTStamp, action, args, **kwargs):
@@ -169,6 +169,10 @@ class Chronisole(object):
             self.show(beginTStamp, endTStamp)
     
     def show(self, beginTStamp=None, endTStamp=None, **kwargs):
+        '''
+        Old-school command good for extremely small programs that you want a
+        source-line-by-source-line execution trace for.
+        '''
         ranges = self.cf.getRangesUsingExecutableCompilationUnits()
         
         last_locals = locals = {}
