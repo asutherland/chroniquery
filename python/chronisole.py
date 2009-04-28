@@ -82,6 +82,7 @@ class Chronisole(object):
         self.show_locals = soleargs.get('show_locals', True)
         self.process_watch_defs(soleargs.get('watch_defs', ()))
         self.call_details = soleargs.get('call_details', False)
+        self.call_backtrace = soleargs.get('call_backtrace', False)
         self.file_per_func_invoc = soleargs.get('file_per_func_invoc', False)
         
         self.dis = chrondis.ChronDis(self.cf._reg_bits)
@@ -368,6 +369,9 @@ class Chronisole(object):
         
         # find all the times the function in question was executed
         for func, beginTStamp in self.cf.scanExecution(func):
+            if self.call_backtrace:
+                self.showBackTrace(beginTStamp+5)
+
             #callInfo = self.cf.findStartOfCall(beginTStamp+1)
             endTStamp = self.cf.findEndOfCall(beginTStamp) or func.endTStamp
             if self.flag_dis:
@@ -923,11 +927,13 @@ class Chronisole(object):
             self._diss(enterTStamp, None, self.dis_instructions, showRelTime=True)
             self._diss(endTStamp, None, self.dis_instructions, showRelTime=True)
         
-        func = self.cf.findRunningFunction(enterTStamp)
+        # XXX TODO the trampoline logic needs to be exposed to us.  the + 3 below
+        # is evil!
+        func = self.cf.findRunningFunction(enterTStamp + 3)
         parameters = self.cf.getParameters(enterTStamp, func, endTStamp)
         pout('%d {fn}%s {.20}{w}%s {.30}{n}%s',
              depth, func.name,
-             self._formatValue(self.cf.getReturnValue(endTStamp, func)),
+             self._formatValue(self.cf.getReturnValue(endTStamp, func)[0]),
              self._formatParameters(parameters),
              )
         
@@ -1006,6 +1012,10 @@ def main(args=None, soleclass=Chronisole):
                        action='store_true', dest='call_details',
                        default=False,
                        help='Show details for all trace sub-calls')
+    oparser.add_option('-b', '--show-back-trace',
+                       action='store_true', dest='call_backtrace',
+                       default=False,
+                       help='Show backtraces for all top-level trace aclls')
     oparser.add_option('-l', '--library',
                        dest='libraries', action='append', type='str',
                        help='Add library to the list or regions to use.',
@@ -1076,6 +1086,7 @@ def main(args=None, soleclass=Chronisole):
                      'show_locals': opts.show_locals,
                      'watch_defs': opts.watches,
                      'call_details': opts.call_details,
+                     'call_backtrace': opts.call_backtrace,
                      'file_per_func_invoc': opts.file_per_func_invoc,
                      },
                     querylog=opts.log,
