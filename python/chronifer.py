@@ -213,6 +213,7 @@ class StructTypeInfo(TypeInfo):
                                ', '.join(map(str, self.fields)))
 
 class AnnotationTypeInfo(TypeInfo):
+    name = '<annotation>'
     def __init__(self, annotation, innerType):
         self.annotation = annotation
         self.innerType = innerType
@@ -580,7 +581,7 @@ class Chronifer(object):
         '''
         @return (did we pretty it, prettified value)
         '''
-        typeName = typeInfo.loseTypedef().name;
+        typeName = typeInfo.name;
         if typeName in self._prettierCache:
             prettier = self._prettierCache[typeName]
         else:

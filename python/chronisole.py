@@ -931,9 +931,9 @@ class Chronisole(object):
         # is evil!
         func = self.cf.findRunningFunction(enterTStamp + 3)
         parameters = self.cf.getParameters(enterTStamp, func, endTStamp)
-        pout('%d {fn}%s {.20}{w}%s {.30}{n}%s',
-             depth, func.name,
-             self._formatValue(self.cf.getReturnValue(endTStamp, func)[0]),
+        pout('%d {cn}%s{fn}%s {.40}{w}%s {.51}{n}%s',
+             depth, func.containerPrefix, func.name,
+             self._formatValue(self.cf.getReturnValue(endTStamp, func)[0], True),
              self._formatParameters(parameters),
              )
         

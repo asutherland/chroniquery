@@ -337,7 +337,7 @@ class FlamOut(object):
                 if tag == self.DIFF_ADDED:
                     code = 'g'
                 elif tag == self.DIFF_REMOVED:
-                    code = 'b'
+                    code = 'e'
                 else: # tag == self.DIFF_MODIFIED:
                     code = 'w'
 
