@@ -80,6 +80,8 @@ class DummyTypeInfo(TypeInfo):
 DummyType = DummyTypeInfo()
 
 class PointerTypeInfo(TypeInfo):
+    name = '<pointer>'
+
     def __init__(self, innerType, size):
         self.innerType = innerType
         self.size = size
@@ -237,6 +239,32 @@ class NativeTypeInfo(TypeInfo):
                            self.name, self.size)
 
 VoidPointerType = PointerTypeInfo(NativeTypeInfo('void', None, 0), 0)
+
+class EnumTypeInfo(TypeInfo):
+    def __init__(self, name, size):
+        self.name = name
+        self.size = size
+
+        self.nameToValue = {}
+        self.valueToNames = {}
+
+    def populate(self, cf, tstamp, mem):
+        val = cf._extractPlatInt(mem)
+        if val in self.valueToNames:
+            return self.valueToNames[val]
+        else:
+            return val
+
+    def addValue(self, name, value):
+        self.nameToValue[name] = value
+        nameStr = self.valueToNames.get(value, '')
+        if nameStr:
+            nameStr += '/'
+        nameStr += name
+        self.valueToNames[value] = nameStr
+
+    def __str__(self):
+        return 'enum %s' % (self.name,)
 
 class PrettierRegistry(object):
     def __init__(self):
@@ -1473,7 +1501,9 @@ class Chronifer(object):
                 ti = NativeTypeInfo(kind, tinfo.get('signed'),
                                     tinfo['byteSize'])
             elif kind == 'enum':
-                ti = None
+                ti = EnumTypeInfo(tinfo.get('name'), tinfo.get('byteSize'))
+                for vinfo in tinfo.get('values'):
+                    ti.addValue(vinfo['name'], vinfo['value'])
             elif kind is None and 'progress' in tinfo:
                 # ignore things that are just about progress
                 ti = DummyType
