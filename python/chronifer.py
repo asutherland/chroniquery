@@ -552,7 +552,7 @@ class Chronifer(object):
         '''
         @return (did we pretty it, prettified value)
         '''
-        typeName = typeInfo.name;
+        typeName = typeInfo.loseTypedef().name;
         if typeName in self._prettierCache:
             prettier = self._prettierCache[typeName]
         else:

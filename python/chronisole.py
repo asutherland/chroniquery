@@ -327,7 +327,7 @@ class Chronisole(object):
                                     odict[fieldName] = sdict.get(fieldName)
 
                             # cache for diffing purposes...
-                            uniqueCacheName = subfunc.name
+                            uniqueCacheName = subfunc.name + '::' + paramName
                             if uniqueCacheName in self.last_dict_for_diff:
                                 last_dict = self.last_dict_for_diff[uniqueCacheName]
                                 pout.ppdiff(pout.dictdiff(last_dict, odict))
