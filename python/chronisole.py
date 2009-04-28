@@ -144,7 +144,7 @@ class Chronisole(object):
             # dereference an argument's value...
             search_varname = expr[1:]
             ptr_val = None
-            for varname, value in kwargs['parameters']:
+            for varname, value, indirectionStr in kwargs['parameters']:
                 if varname == search_varname:
                     ptr_val = value
                     break
@@ -234,12 +234,12 @@ class Chronisole(object):
     
     def _formatParameters(self, parameters):
         str_parts = []
-        for label, value in parameters:
+        for label, value, indirectionStr in parameters:
             v = self._formatValue(value)
             try:
-                str_parts.append('%s: %s' % (label, v))
+                str_parts.append('%s%s: %s' % (indirectionStr, label, v))
             except:
-                str_parts.append('%s: glitch' % label)
+                str_parts.append('%s%s: glitch' % (indirectionStr, label))
     
         return ', '.join(str_parts)
     
@@ -273,7 +273,8 @@ class Chronisole(object):
                          subEndTStamp and
                              self._formatValue(self.cf.getReturnValue(subEndTStamp, subfunc)) or
                              "n/a",
-                         self._formatParameters(self.cf.getParameters(subBeginTStamp, subfunc)),
+                         self._formatParameters(self.cf.getParameters(subBeginTStamp, subfunc,
+                                                                      subEndTStamp)),
                          )
                 else:
                     pout('{s}cpp {cn}%s{fn}%s', subfunc.containerPrefix, subfunc.name)
@@ -297,7 +298,8 @@ class Chronisole(object):
                      endTStamp and
                          self._formatValue(self.cf.getReturnValue(endTStamp, func)) or
                          "n/a",
-                     self._formatParameters(self.cf.getParameters(beginTStamp, func)),
+                     self._formatParameters(self.cf.getParameters(beginTStamp, func,
+                                                                  endTStamp)),
                      )
             else:
                 pout('{s}cpp {cn}%s{fn}%s', func.containerPrefix, func.name)
@@ -314,7 +316,7 @@ class Chronisole(object):
             if self.flag_dis:
                 self._diss(beginTStamp, None, self.dis_instructions, showRelTime=True)
             
-            parameters = self.cf.getParameters(beginTStamp)
+            parameters = self.cf.getParameters(beginTStamp, func, endTStamp)
             if self.file_per_func_invoc:
                 pout.linkToPermutation(beginTStamp)
             pout('{fn}%s {.20}{w}%s {.30}{n}%s',
@@ -389,7 +391,7 @@ class Chronisole(object):
         func = self.cf.lookupGlobalFunction('js_DestroyContext')
         for func, beginTStamp in self.cf.scanExecution(func):
             endTStamp = self.cf.findEndOfCall(beginTStamp)
-            params = self.cf.getParameters(beginTStamp, func)
+            params = self.cf.getParameters(beginTStamp, func, endTStamp)
             context = params[0][1]
             contexts[context][1] = endTStamp
             pout('Context: %x: %d-%d', context, contexts[context][0],
@@ -814,7 +816,7 @@ class Chronisole(object):
             self._diss(endTStamp, None, self.dis_instructions, showRelTime=True)
         
         func = self.cf.findRunningFunction(enterTStamp)
-        parameters = self.cf.getParameters(enterTStamp)
+        parameters = self.cf.getParameters(enterTStamp, func, endTStamp)
         pout('%d {fn}%s {.20}{w}%s {.30}{n}%s',
              depth, func.name,
              self._formatValue(self.cf.getReturnValue(endTStamp, func)),

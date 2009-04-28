@@ -261,7 +261,7 @@ class Chronifer(object):
         
         # non-existent paths are inherently boring
         if path is None:
-            return interesting, depth, True
+            return interesting, depth, False, #True
         
         # paths first
         cur_path = ''
@@ -369,7 +369,7 @@ class Chronifer(object):
             self._sp_reg = 'esp'
             self._bp_reg = 'ebp'
             self._retval_reg = 'eax'
-            self._ptr_size = 4
+            self._ptr_size = self._int_size = self._long_size = 4
             self._reg_bits = 32
             self._max_long = (2 << 32) - 1
             self._int_sizes = (4,)
@@ -377,7 +377,8 @@ class Chronifer(object):
             self._sp_reg = 'rsp'
             self._bp_reg = 'rbp'
             self._retval_reg = 'rax'
-            self._ptr_size = 8
+            self._int_size = 4
+            self._ptr_size = self._long_size = 8
             self._reg_bits = 64
             self._max_long = (2 << 64) - 1
             self._int_sizes = (4, 8)
@@ -739,8 +740,49 @@ class Chronifer(object):
                 if abs(paranoia_pc - pc) > 128:
                     subEnterTStamp += 1
                     pc = paranoia_pc
-                func = self.findRunningFunction(subEnterTStamp+1, pc)
-                
+                    # update paranoia_pc for the next trampoline checker, ugh.
+                    paranoia_pc = self.getPC(subEnterTStamp+2)
+
+                # now that we have trampolines out of the way, we have another
+                #  problem.  when dealing with XPCOM we can have a prolog that
+                #  is responsible for adjusting the 'this' pointer because it
+                #  was sliced.
+                # example:
+                #  0xd914293 4 ADD RDI, -0x38 (48 83c7 c8) tsrel: 0 (really 1)
+                #  0xd914297 2 JMP 0xd91429a (eb 01)       tsrel: 1 (really 2)
+                #  0xd914299 1 NOP (90)
+                #  0xd91429a 1 PUSH RBP (55)               tsrel: 2 (really 3)
+                # ('really' is because we are adding 1 to subEnterTStamp above)
+                # 
+                # so how do we deal with this?  if the function lookup fails and
+                #  is anonymous, we look 2 (really 3) timestamps into the future
+                #  and see if that has a real function.  if it does, we amend
+                #  our timestamp and pc to use the actual class's entry point.
+                # in an unoptimized case, it should reliably take 2 opcodes to
+                #  do this.  in an optimized case with fall-through, just 1
+                #  opcode.  since the un-optimized case is not very likely, we
+                #  do the lookup against the +2 timestamp, and then fix it up if
+                #  it turns out that +1 had the same PC as the function's entry
+                #  point.
+
+                # (False is because unknown is not okay)
+                func = self.findRunningFunction(subEnterTStamp+1, pc, False)
+                # handle the 'this' adjustment case just discussed
+                if func is None:
+                    cand_pc = self.getPC(subEnterTStamp+3)
+                    func = self.findRunningFunction(subEnterTStamp+3, cand_pc,
+                                                    False)
+                    if func:
+                        # check if subEnterTStamp+2's pc (paranoia_pc) is the entry
+                        if paranoia_pc == func.entryPoint:
+                            subEnterTStamp += 1
+                            pc = paranoia_pc
+                        else:
+                            subEnterTStamp += 2
+                            pc = cand_pc
+                    # fall back to an anonymously generated function
+                    func = self.findRunningFunction(subEnterTStamp+1, pc, True)
+
                 if func and pc == func.entryPoint:
                     yield (func,
                            subEnterTStamp + 1,
@@ -1019,14 +1061,39 @@ class Chronifer(object):
         return self._decodePlatInt(dvalue['bytes'])
 
     
-    def getValue(self, tstamp, valKey, typeKey):
+    def getValue(self, tstamp, valKey, typeKey, endTStamp=None):
+        '''
+        Given a timestamp, value key, and type key, compute a user-readable
+        explanation of the value plus a string conveying the amount of indirection
+        traversed.  For exampe, if the underlying variable is a 'char *' to the
+        string 'foo', we will return ('foo', '*')
+
+        We traverse non-null pointers on subtypes of:
+        - char: because we think it's a string
+        - int: because this idiom is used by mozilla code all over the place
+          to provide a PRBool or integer return value.  This probably happens
+          other places too; for an integer buffer array, I'd expect 'int **'
+          anyways, which we should not pierece.
+
+        @param endTStamp Optional, for use when dealing with out parameters, we
+            use this timestamp to get the value of the parameter at out-time!
+            Currently only used for the *int case above.
+
+        @return A tuple of (value, indirection traversed string)
+        '''
         #print '---'
+
+        indirectionStr = ''
+        typeName = None
+        subtype = None
+        pointerDepth = 0
 
         # although the whole routine still needs a lot more work, this part is horrid.
         indirections = []
         for tinfo in self.c.ssa('lookupType', typeKey=typeKey):
             kind = tinfo.get('kind')
             if kind == 'pointer':
+                pointerDepth += 1
                 # okay, what are we pointing at...
                 stinfo = tinfo
                 subtype = 'unknown'
@@ -1035,6 +1102,7 @@ class Chronifer(object):
                     for stinfo in self.c.ssa('lookupType', typeKey=stinfo['innerTypeKey']):
                         if 'kind' in stinfo:
                             if stinfo['kind'] == 'pointer':
+                                pointerDepth += 1
                                 subtype = 'pp'
                             else:
                                 #print 'SUBINFO', stinfo
@@ -1045,7 +1113,8 @@ class Chronifer(object):
                 typeName = tinfo.get('name')
                 #print 'TINFO', tinfo
                 break
-        
+        #print 'INDIRECTIONS', indirections
+        #print 'kind', kind, 'typeName', typeName, 'subtype', subtype, 'ptrDepth', pointerDepth
         val = 0
         
         lvalues = self.c.ssa('getLocation',
@@ -1067,27 +1136,44 @@ class Chronifer(object):
                 break
         
         if kind == 'pointer':
-            # if it's a type we know how to print, pop off the indirections...
-            if subtype == 'char':
+            # if it's a native-ish type we know how to print and the depth is
+            #  one, suggesting an out-param
+            # OR if it has a depth of exactly 2 and it's not pointing to a
+            #  native type (we're using a fudge set right now, should have a
+            #  more complete set or something), de-reference up to the last
+            #  pointer, as this also suggests an out-param
+            if ((pointerDepth == 1 and subtype in ('char', 'int')) or
+                (pointerDepth == 2 and subtype not in ('char', 'int'))):
                 # now pop off the indirections (this does not include the final
                 #  type!), noting that we skip the first indirection, because
                 #  it has already been 'pierced'
+                useStamp = (pointerDepth == 2) and endTStamp or tstamp
                 for indirection in indirections[1:]:
                     if indirection['kind'] == 'pointer':
                         byteSize = indirection.get('byteSize', self._ptr_size)
-                        val = self.readInt(tstamp, val, byteSize)
-                
-                val = self.readCString(tstamp, val)
+                        indirectionStr += '*'
+                        val = self.readInt(useStamp, val, byteSize)
+
+                if subtype == 'char':
+                    if val:
+                        indirectionStr += '*'
+                        val = self.readCString(tstamp, val)
+                elif subtype == 'int':
+                    if val:
+                        byteSize = indirections[-1].get('byteSize', self._int_size)
+                        indirectionStr += '*'
+                        val = self.readInt(endTStamp or tstamp, val, byteSize)
+                    
         elif kind == 'int' and typeName == 'bool':
             #print '***boolhex:', hex(ord(val[0])), 'from', lvalue['address']
             val = bool(ord(val[0]))
         
-        return val
+        return (val, indirectionStr)
     
-    def _getValueFromPacket(self, tstamp, pinfo):
-        return self.getValue(tstamp, pinfo['valKey'], pinfo['typeKey'])
+    def _getValueFromPacket(self, tstamp, pinfo, *args, **kwargs):
+        return self.getValue(tstamp, pinfo['valKey'], pinfo['typeKey'], *args, **kwargs)
     
-    def getParameters(self, tstamp, func=None):
+    def getParameters(self, tstamp, func=None, endTStamp=None, noIndirection=False):
         if func is None:
             func = self.findRunningFunction(tstamp)
 
@@ -1103,13 +1189,18 @@ class Chronifer(object):
         params = []
         for pinfo in self.c.ssm('getParameters', TStamp=prologueEndTStamp):
             if 'name' in pinfo:
-                params.append((pinfo['name'],
-                               self._getValueFromPacket(prologueEndTStamp, pinfo)))
+                value, indirectionStr = self._getValueFromPacket(prologueEndTStamp, pinfo,
+                                                                 endTStamp)
+                if noIndirection:
+                    params.append((pinfo['name'], value))
+                else:
+                    params.append((pinfo['name'], value, indirectionStr))
         
         return params
     
     def getParametersAsDict(self, *args, **kwargs):
-        return dict(self.getParameters(*args, **kwargs))
+        kwargs['noIndirection'] = True
+        return dict(self.getParameters(*args,**kwargs))
     
     def getLocals(self, tstamp):
         c = self.c
@@ -1117,7 +1208,8 @@ class Chronifer(object):
         locals = {}
         for lokal in c.ssm('getLocals', TStamp=tstamp):
             if 'name' in lokal:
-                locals[lokal['name']] = self._getValueFromPacket(tstamp, lokal)
+                value, indirectionStr = self._getValueFromPacket(tstamp, lokal)
+                locals[lokal['name']] = value
                 
         return locals
 
