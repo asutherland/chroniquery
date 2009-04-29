@@ -27,7 +27,9 @@ function fixupSimile() {
 function onLoad() {
   fixupSimile();
 
-  var eventSource = new Timeline.DefaultEventSource(0);
+  var contextSource = new Timeline.DefaultEventSource(0);
+  var specificSource = new Timeline.DefaultEventSource(0);
+
 
   var showDate = new Date(1);
 
@@ -36,26 +38,35 @@ function onLoad() {
 
   var bandInfos = [
     Timeline.createBandInfo({
-      width:          "60%",
+      width:          "10%",
       intervalUnit:   Timeline.DateTime.HOUR,
-      intervalPixels: 100,
-      eventSource:    eventSource,
+      intervalPixels: 400,
+      eventSource:    contextSource,
       date: showDate,
       theme: theme
     }),
     Timeline.createBandInfo({
-      width:          "30%",
+      width:          "60%",
+      intervalUnit:   Timeline.DateTime.HOUR,
+      intervalPixels: 400,
+      eventSource:    specificSource,
+      date: showDate,
+      theme: theme
+    }),
+    Timeline.createBandInfo({
+      width:          "20%",
       intervalUnit:   Timeline.DateTime.DAY,
       intervalPixels: 400,
-      eventSource:    eventSource,
+      eventSource:    specificSource,
       date: showDate,
+      layout: "overview",
       theme: theme
     }),
     Timeline.createBandInfo({
       width:          "10%",
       intervalUnit:   Timeline.DateTime.DAY,
       intervalPixels: 100,
-      eventSource:    eventSource,
+      eventSource:    specificSource,
       showEventText:  false,
       layout: "overview",
       date: showDate,
@@ -63,14 +74,16 @@ function onLoad() {
     }),
   ];
   bandInfos[1].syncWith = 0;
-  bandInfos[1].highlight = true;
   bandInfos[2].syncWith = 0;
   bandInfos[2].highlight = true;
+  bandInfos[3].syncWith = 0;
+  bandInfos[3].highlight = true;
 
   tl = Timeline.create(document.getElementById("timeline"), bandInfos);
   var filename = "chroni.js?"+ (new Date().getTime());
   tl.loadJSON(filename, function(json, url) {
-                eventSource.loadJSON(json, url);
+                contextSource.loadJSON(json.context, url);
+                specificSource.loadJSON(json.specific, url);
             });
 
 }

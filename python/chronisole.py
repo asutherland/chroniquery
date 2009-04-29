@@ -17,6 +17,7 @@
 
 
 from chronifer import Chronifer
+import chronifer
 import chrondis
 
 import optparse, os.path
@@ -411,8 +412,11 @@ class Chronisole(object):
             self.json_rep = json.load(f)
             f.close()
         else:
-            self.json_rep = {'dateTimeFormat': 'javascriptnative',
-                             'events': []}
+            self.json_rep = {}
+            self.json_rep['context'] = {'dateTimeFormat': 'javascriptnative',
+                                        'events': []}
+            self.json_rep['specific'] = {'dateTimeFormat': 'javascriptnative',
+                                         'events': []}
 
     def json_save(self):
         '''
@@ -424,7 +428,6 @@ class Chronisole(object):
         f.close()
 
     def json_trace_function(self, func):
-        json_rep = self.json_rep
         def frob_timestamp(d):
             return 'Date(%d)' % (d,)
         for func, beginTStamp in self.cf.scanExecution(func):
@@ -444,11 +447,31 @@ class Chronisole(object):
             event = {
                 'start': frob_timestamp(beginTStamp),
                 'end': frob_timestamp(endTStamp),
-                'title': func.name,
+                'title': func.extra.get('prefixalias', '') + func.name,
                 'd': description,
-                'durationEvent': (endTStamp - beginTStamp > 1024) and True or False,
+                'durationEvent': True, #(endTStamp - beginTStamp > 1024) and True or False,
             }
-            json_rep['events'].append(event)
+
+            if 'list_args' in func.extra:
+                argsRequested = func.extra['list_args'].split(',')
+                for paramName, paramType, paramVal in self.cf.getRawParameters(
+                        beginTStamp, func):
+                    if paramName in argsRequested:
+                        if isinstance(paramType, chronifer.StructTypeInfo):
+                            val = 'struct! enhance me!' # XXX enhance me
+                        else:
+                            val = paramType.loseTypedef().populate(self.cf,
+                                      beginTStamp, paramVal)
+                        event['title'] += ' ' + val
+
+
+            if retval_exceptional:
+                event['color'] = 'red'
+            elif 'color' in func.extra:
+                event['color'] = func.extra['color']
+                event['textColor'] = func.extra.get('textColor', 'black')
+
+            self.json_rep[func.extra.get('band', 'specific')]['events'].append(event)
 
     def jstrace(self):
         '''

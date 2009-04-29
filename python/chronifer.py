@@ -45,9 +45,10 @@ class FuncInfo(object):
         
         # prefer the compilationUnitDir if present, because it actually knows
         #  where (some?) headers came from 
-        self.interesting, self.depth, self.boring, self.dumpInfo = self.cf._isComplexInteresting(
+        self.interesting, self.depth, self.boring, self.dumpInfo, self.extra = (
+            self.cf._isComplexInteresting(
                             self.compilationUnitDir or self.compilationUnit,
-                            self.containerPrefix, self.name)
+                            self.containerPrefix, self.name))
         
         if '<' in self.fullName:
             #print 'Boring-izing template', self.fullName
@@ -87,9 +88,14 @@ class PointerTypeInfo(TypeInfo):
         self.size = size
     
     def populate(self, cf, tstamp, mem):
-        val = cf._extractPlatInt(mem)
-        if self.innerType.loseTypedef().kind == 'char':
-            return self.cf.readCString(tstamp, val)
+        if isinstance(mem, basestring):
+            val = cf._extractPlatInt(mem)
+        else:
+            val = mem
+        # uh, this is a char, why not
+        realType = self.innerType.loseTypedef()
+        if realType.size == 1 and realType.name == "int":
+            return cf.readCString(tstamp, val)
         return val
 
     def __str__(self):
@@ -235,7 +241,7 @@ class NativeTypeInfo(TypeInfo):
         return cf._extractPlatInt(mem)
     
     def __str__(self):
-        return '%s%s%d' % ((self.signed is None) and ' ' or
+        return '%s-%s-%d' % ((self.signed is None) and ' ' or
                            (self.signed and 'signed' or 'unsigned'),
                            self.name, self.size)
 
@@ -354,6 +360,7 @@ class Chronifer(object):
                 boring = None
 
             dump_meta = {}
+            extra = {}
             for key, value in self.config.items(sect):
                 if key.startswith('dump_'):
                     name = key[5:]
@@ -362,6 +369,8 @@ class Chronifer(object):
                     elif value.lower() == 'false':
                         value = False
                     dump_meta[name] = value
+                elif key not in ('interesting', 'depth', 'boring'):
+                    extra[key] = value
             
             # boring implies not interesting, but not boring does not imply
             #  interesting.
@@ -369,7 +378,7 @@ class Chronifer(object):
                 depth = 0
                 interesting = False
                 
-            return (interesting, depth, boring, dump_meta)
+            return (interesting, depth, boring, dump_meta, extra)
             
         
         for section in self.config.sections():
@@ -392,10 +401,11 @@ class Chronifer(object):
         depth = self._defaultDepth
         boring = False
         dumpInfo = None
+        extra = {}
         
         # non-existent paths are inherently boring
         if path is None:
-            return interesting, depth, True, {}
+            return interesting, depth, True, {}, {}
         
         # paths first
         cur_path = ''
@@ -403,7 +413,7 @@ class Chronifer(object):
         for path_part in path.split('/'): # nuts to windows
             cur_path = os.path.join(cur_path, path_part)
             if cur_path in self._interestingPaths:
-                dirInteresting, dirDepth, dirBoring, dirDump = self._interestingPaths[cur_path]
+                dirInteresting, dirDepth, dirBoring, dirDump, dirExtra = self._interestingPaths[cur_path]
                 if dirInteresting is not None:
                     interesting = dirInteresting
                 if dirDepth is not None:
@@ -412,10 +422,11 @@ class Chronifer(object):
                     boring = dirBoring
                 if len(dirDump):
                     dumpInfo = dirDump
+                extra.update(dirExtra)
         
         # then containers
         if containerPrefix in self._interestingContainers:
-            contInteresting, contDepth, contBoring, contDump = \
+            contInteresting, contDepth, contBoring, contDump, contExtra = \
                     self._interestingContainers[containerPrefix]
             if contInteresting is not None:
                 interesting = contInteresting
@@ -425,10 +436,11 @@ class Chronifer(object):
                 boring = contBoring
             if len(contDump):
                 dumpInfo = contDump
+            extra.update(contExtra)
 
         # then function name
         if funcName in self._interestingFunctions:
-            funcInteresting, funcDepth, funcBoring, funcDump = \
+            funcInteresting, funcDepth, funcBoring, funcDump, funcExtra = \
                     self._interestingFunctions[funcName];
             if funcInteresting is not None:
                 interesting = funcInteresting
@@ -438,8 +450,9 @@ class Chronifer(object):
                 boring = funcBoring
             if len(funcDump):
                 dumpInfo = funcDump
+            extra.update(funcExtra)
                 
-        return interesting, depth, boring, dumpInfo
+        return interesting, depth, boring, dumpInfo, extra
     
     def _evilNormalizePath(self, path, relativeTo=None):
         '''
@@ -529,7 +542,6 @@ class Chronifer(object):
             return struct.unpack('<I', membytes)[0]
         else:
             return struct.unpack('<Q', membytes)[0]
-
 
     def _decodePlatInt(self, sval):
         '''
