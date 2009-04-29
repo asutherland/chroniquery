@@ -85,6 +85,7 @@ class Chronisole(object):
         self.call_details = soleargs.get('call_details', False)
         self.call_backtrace = soleargs.get('call_backtrace', False)
         self.file_per_func_invoc = soleargs.get('file_per_func_invoc', False)
+        self.only_show_thread = soleargs.get('only_show_thread')
         
         self.dis = chrondis.ChronDis(self.cf._reg_bits)
 
@@ -94,7 +95,13 @@ class Chronisole(object):
         if self.action == 'show':
             self.show()
         elif self.action == 'trace':
-            self.trace(self.functions)
+            self.trace(self.functions, self.trace_function)
+        elif self.action == 'jsontrace':
+            # this basically finds function invocations and blats them to JSON
+            #  so a SIMILE timeline can be happy.
+            self.json_load()
+            self.trace(self.functions, self.json_trace_function)
+            self.json_save()
         elif self.action == 'jstrace':
             self.init_xpc()
             self.init_jstrace()
@@ -216,7 +223,7 @@ class Chronisole(object):
                 
             last_locals = locals
     
-    def trace(self, function_names):
+    def trace(self, function_names, trace_func):
         '''
         For each function in function names, trace the execution of the
         function, which mainly means tracking functions it in turn calls.
@@ -230,7 +237,7 @@ class Chronisole(object):
                 for aname, akind in self.cf.autocomplete(func_name):
                     pout('   {n}Alternative: {ex}%s {s}(%s)', aname, akind)
             else:
-                self.trace_function(func)
+                trace_func(func)
             
     def show_mmap(self):
         '''
@@ -348,6 +355,10 @@ class Chronisole(object):
         
         # find all the times the function in question was executed
         for func, beginTStamp in self.cf.scanExecution(func):
+            thread = self.cf.getThread(beginTStamp)
+            if self.only_show_thread is not None and self.only_show_thread != thread:
+                continue
+
             if self.call_backtrace:
                 self.showBackTrace(beginTStamp+5)
 
@@ -363,7 +374,7 @@ class Chronisole(object):
             pout('{n}%x {s}%10d {cn}%s{fn}%s {.50}{bn}' +
                  (retval_exceptional and '{bge}%s{-bg}' or '%s') +
                  ' {.60}{n}%s',
-                 self.cf.getThread(beginTStamp),
+                 thread,
                  beginTStamp, func.containerPrefix, func.name,
                  self._formatValue(retval, True),
                  self._formatParameters(parameters),
@@ -388,6 +399,57 @@ class Chronisole(object):
 
             pout.i(-2)
     
+    json_filename = '/tmp/chroni.json'
+    def json_load(self):
+        '''
+        Load the JSON file we persist data to if it exists.  This allows us to
+        be additive.  Whoo!
+        '''
+        import json
+        if os.path.exists(self.json_filename):
+            f = open(self.json_filename, 'r')
+            self.json_rep = json.load(f)
+            f.close()
+        else:
+            self.json_rep = {'dateTimeFormat': 'javascriptnative',
+                             'events': []}
+
+    def json_save(self):
+        '''
+        Save our accumulated state back to the JSON file.
+        '''
+        import json
+        f = open(self.json_filename, 'w')
+        json.dump(self.json_rep, f, indent=2)
+        f.close()
+
+    def json_trace_function(self, func):
+        json_rep = self.json_rep
+        def frob_timestamp(d):
+            return 'Date(%d)' % (d,)
+        for func, beginTStamp in self.cf.scanExecution(func):
+            endTStamp = self.cf.findEndOfCall(beginTStamp) or func.endTStamp
+            thread = self.cf.getThread(beginTStamp)
+            if self.only_show_thread is not None and self.only_show_thread != thread:
+                continue
+
+            retval, retval_exceptional = self.cf.getReturnValue(endTStamp, func)
+            parameters = self.cf.getParameters(beginTStamp, func, endTStamp)
+
+            description = ('%s%s<br>ret: %s<br>args: %s' % (
+                    func.containerPrefix, func.name,
+                    self._formatValue(retval, True),
+                    self._formatParameters(parameters)))
+
+            event = {
+                'start': frob_timestamp(beginTStamp),
+                'end': frob_timestamp(endTStamp),
+                'title': func.name,
+                'd': description,
+                'durationEvent': (endTStamp - beginTStamp > 1024) and True or False,
+            }
+            json_rep['events'].append(event)
+
     def jstrace(self):
         '''
         SpiderMonkey JS-engine and XPConnect aware tracing support.  Because we
@@ -1050,6 +1112,10 @@ def main(args=None, soleclass=Chronisole):
                        dest='max_depth', type='int',
                        default=32)
 
+    oparser.add_option('-t', '--thread',
+                       dest='only_show_thread', type='int',
+                       default=None)
+
     oparser.add_option('-D', '--disassemble',
                        action='store_true', dest='disassemble',
                        default=False,
@@ -1105,6 +1171,7 @@ def main(args=None, soleclass=Chronisole):
                      'call_details': opts.call_details,
                      'call_backtrace': opts.call_backtrace,
                      'file_per_func_invoc': opts.file_per_func_invoc,
+                     'only_show_thread': opts.only_show_thread,
                      },
                     querylog=opts.log,
                     extremeDebug=opts.extremeDebug,
