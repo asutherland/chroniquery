@@ -776,6 +776,8 @@ class Chronifer(object):
         return self.getRegisters(tstamp, self._sp_reg)[0]
     def getPC(self, tstamp):
         return self.getRegisters(tstamp, self._pc_reg)[0]
+    def getThread(self, tstamp):
+        return self.getRegisters(tstamp, self._thread_reg)[0]
 
     def findStartOfCall(self, tstamp):
         '''

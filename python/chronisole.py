@@ -76,7 +76,8 @@ class Chronisole(object):
         self.libraries = soleargs.get('libraries', [])
         self.values = soleargs.get('values', [])
         self.excluded_functions = soleargs.get('excluded_functions', [])
-        self.max_depth = soleargs.get('depth', 0)
+        self.desired_depth = soleargs.get('depth', 0)
+        self.max_depth = soleargs.get('max_depth', 256)
         self.flag_dis = soleargs.get('disassemble', False)
         self.dis_instructions = soleargs.get('instructions', 3)
         self.show_locals = soleargs.get('show_locals', True)
@@ -270,7 +271,7 @@ class Chronisole(object):
         file that marks folders/files/classes/functions/etc. as interesting or
         boring and what not.
         '''
-        def helpy(beginTStamp, endTStamp, depth=2, max_depth=None):
+        def helpy(beginTStamp, endTStamp, depth=2, depth_limit=None):
             # iterate over the calls found between the given start/end
             #  timestamps, which have been bounded to be inside our parent
             #  function...
@@ -313,8 +314,9 @@ class Chronisole(object):
                     self.showDumpForFunc(subfunc, subBeginTStamp)
 
 
-                rel_max_depth = max(max_depth, depth + subfunc.depth)
-                if (subfunc.interesting or depth < rel_max_depth):
+                rel_max_depth = max(depth_limit, depth + subfunc.depth)
+                if ((subfunc.interesting or depth < rel_max_depth) and
+                        depth < self.max_depth):
                     helpy(subBeginTStamp, subEndTStamp, depth + 1, rel_max_depth)
                 #sline = self.cf.getSourceLineInfo(subBeginTStamp)
                 #if sline:
@@ -358,9 +360,10 @@ class Chronisole(object):
             if self.file_per_func_invoc:
                 pout.linkToPermutation(beginTStamp)
             retval, retval_exceptional = self.cf.getReturnValue(endTStamp, func)
-            pout('{s}%10d {cn}%s{fn}%s {.50}{bn}' +
+            pout('{n}%x {s}%10d {cn}%s{fn}%s {.50}{bn}' +
                  (retval_exceptional and '{bge}%s{-bg}' or '%s') +
                  ' {.60}{n}%s',
+                 self.cf.getThread(beginTStamp),
                  beginTStamp, func.containerPrefix, func.name,
                  self._formatValue(retval, True),
                  self._formatParameters(parameters),
@@ -378,8 +381,8 @@ class Chronisole(object):
 
             if self.file_per_func_invoc:
                 pout.pushFilePermutation(beginTStamp)
-            if self.max_depth != 1:
-                helpy(beginTStamp, endTStamp, self.max_depth)
+            if self.desired_depth != 1:
+                helpy(beginTStamp, endTStamp, self.desired_depth)
             if self.file_per_func_invoc:
                 pout.popFilePermutation()
 
@@ -1043,6 +1046,9 @@ def main(args=None, soleclass=Chronisole):
     oparser.add_option('-d', '--depth',
                        dest='depth', type='int',
                        default=0)
+    oparser.add_option('--max-depth',
+                       dest='max_depth', type='int',
+                       default=32)
 
     oparser.add_option('-D', '--disassemble',
                        action='store_true', dest='disassemble',
@@ -1091,6 +1097,7 @@ def main(args=None, soleclass=Chronisole):
                      'values': opts.values,
                      'excluded_functions': opts.excluded_functions,
                      'depth': opts.depth,
+                     'max_depth': opts.max_depth,
                      'disassemble': opts.disassemble,
                      'instructions': opts.instructions,
                      'show_locals': opts.show_locals,
