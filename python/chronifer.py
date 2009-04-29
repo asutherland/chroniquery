@@ -1473,10 +1473,18 @@ class Chronifer(object):
                 continue
             
             if 'partial' in tinfo:
-                tinfo = self.c.sss('lookupGlobalType', name=tinfo['name'],
+                gtinfo = self.c.sss('lookupGlobalType', name=tinfo['name'],
                                    typeKey=typeKey)
-                tinfo = self.c.sss('lookupType', typeKey=tinfo['typeKey'])
-                typeKey = tinfo['typeKey']
+                if 'typeKey' in gtinfo:
+                    typeKey = gtinfo['typeKey']
+                    tinfo = self.c.sss('lookupType', typeKey=typeKey)
+                else:
+                    # okay, we bottomed out.  there was no global type for us...
+                    # let's just roll with the partial type and be passive
+                    #  aggressive about the whole thing.  (in that we will likely
+                    #  subtly do the wrong thing.)
+                    # this mainly happens to me for things in mozilla/js...
+                    pass
             
             kind = tinfo.get('kind')
             if kind == 'annotation':
@@ -1492,8 +1500,14 @@ class Chronifer(object):
                 ti = TypedefTypeInfo(tinfo['name'],
                                      self.getTypeInfo(tinfo['innerTypeKey']))
             elif kind == 'struct':
+                # we no longer require byteSize to be present because we may end
+                #  up in a situation where we have a pointer to something but don't
+                #  have the type definition for the actual structure because the
+                #  global type lookup failed to complete our partial info.  in that
+                #  case, the best we can do is try and have a type marker that is
+                #  basically useless
                 ti = StructTypeInfo(tinfo.get('name'), tinfo['structKind'],
-                                    tinfo['byteSize'])
+                                    tinfo.get('byteSize', 0))
                 # cache structs immediately since they can be self-recursive
                 self._typeCache[typeKey] = ti
                 for finfo in tinfo.get('fields'):

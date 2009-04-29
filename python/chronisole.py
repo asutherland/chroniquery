@@ -87,6 +87,9 @@ class Chronisole(object):
         self.call_backtrace = soleargs.get('call_backtrace', False)
         self.file_per_func_invoc = soleargs.get('file_per_func_invoc', False)
         self.only_show_thread = soleargs.get('only_show_thread')
+        self.req_beginTStamp = soleargs.get('req_beginTStamp')
+        self.req_endTStamp = soleargs.get('req_endTStamp')
+        self.req_interval = soleargs.get('req_interval')
         
         self.dis = chrondis.ChronDis(self.cf._reg_bits)
 
@@ -95,6 +98,8 @@ class Chronisole(object):
     def run(self):
         if self.action == 'show':
             self.show()
+        elif self.action == 'stackfrob':
+            self.stackfrob()
         elif self.action == 'trace':
             self.trace(self.functions, self.trace_function)
         elif self.action == 'jsontrace':
@@ -361,7 +366,9 @@ class Chronisole(object):
                 continue
 
             if self.call_backtrace:
+                pout.i(2)
                 self.showBackTrace(beginTStamp+5)
+                pout.i(-2)
 
             #callInfo = self.cf.findStartOfCall(beginTStamp+1)
             endTStamp = self.cf.findEndOfCall(beginTStamp) or func.endTStamp
@@ -436,6 +443,19 @@ class Chronisole(object):
             if self.only_show_thread is not None and self.only_show_thread != thread:
                 continue
 
+            if 'only_show_if' in func.extra:
+                args = func.extra['only_show_if'].split(',')
+                if args[0] != 'backtrace':
+                    raise Exception("Illegal only_show_if_command: " + args)
+                frame_tstamp = beginTStamp
+                for iFrame in range(int(args[1])):
+                    call = self.cf.findStartOfCall(frame_tstamp)
+                    frame_tstamp = call[0] - 1
+                frame_func = self.cf.findRunningFunction(frame_tstamp + 3)
+                if args[2] != frame_func.fullName:
+                    continue
+                
+
             retval, retval_exceptional = self.cf.getReturnValue(endTStamp, func)
             parameters = self.cf.getParameters(beginTStamp, func, endTStamp)
 
@@ -447,13 +467,15 @@ class Chronisole(object):
             event = {
                 'start': frob_timestamp(beginTStamp),
                 'end': frob_timestamp(endTStamp),
-                'title': func.extra.get('prefixalias', '') + func.name,
+                'title': func.extra.get('prefixalias', '') +
+                         func.extra.get('alias',func.name),
                 'd': description,
                 'durationEvent': True, #(endTStamp - beginTStamp > 1024) and True or False,
             }
 
             if 'list_args' in func.extra:
                 argsRequested = func.extra['list_args'].split(',')
+                do_not_show = False
                 for paramName, paramType, paramVal in self.cf.getRawParameters(
                         beginTStamp, func):
                     if paramName in argsRequested:
@@ -462,7 +484,22 @@ class Chronisole(object):
                         else:
                             val = paramType.loseTypedef().populate(self.cf,
                                       beginTStamp, paramVal)
-                        event['title'] += ' ' + val
+                        arg_cond_name = 'only_show_if_arg_' + paramName
+                        if arg_cond_name in func.extra:
+                            arg_cond = func.extra[arg_cond_name]
+                            if arg_cond == 'important':
+                                val = val.strip()
+                                if not (val.startswith('***') or val.isupper()):
+                                    do_not_show = True
+                                    break
+                                if not val.replace('*', ''):
+                                    do_not_show = True
+                                    break
+                                val = val.replace('*****', '***')
+
+                        event['title'] += ' ' + val[:24]
+                if do_not_show:
+                    continue
 
 
             if retval_exceptional:
@@ -1000,6 +1037,16 @@ class Chronisole(object):
                     pout.pp(odict)
                     self.last_dict_for_diff[uniqueCacheName] = odict
 
+    def stackfrob(self):
+        beginTStamp = self.req_beginTStamp or self.cf._beginTStamp
+        endTStamp = self.req_endTStamp or self.cf._endTStamp
+        interval = self.req_interval or (endTStamp - beginTStamp) // 10
+        print 'begin', beginTStamp, 'end', endTStamp, 'delta', endTStamp - beginTStamp, 'interval', interval
+        for ts in range(beginTStamp, endTStamp+1, interval):
+            pout('{n}Timestamp: {bn}%12d', ts)
+            pout.i(2)
+            self.showBackTrace(ts)
+            pout.i(-2)
 
     def showBackTrace(self, tstamp, depth=0):
         '''
@@ -1106,6 +1153,19 @@ def main(args=None, soleclass=Chronisole):
                        help='Add list to list of functions to process.',
                        default=[]
                        )
+    oparser.add_option('-B', '--begin',
+                       dest='req_beginTStamp', type='int',
+                       default=None,
+                       help='Time stamp to start from')
+    oparser.add_option('-E', '--end',
+                       dest='req_endTStamp', type='int',
+                       default=None,
+                       help='Time stamp to process to')
+    oparser.add_option('-i', '--interval',
+                       dest='req_interval', type='int',
+                       default=None,
+                       help='Time stamp interval to use.')
+
     oparser.add_option('-c', '--call-details',
                        action='store_true', dest='call_details',
                        default=False,
@@ -1195,6 +1255,9 @@ def main(args=None, soleclass=Chronisole):
                      'call_backtrace': opts.call_backtrace,
                      'file_per_func_invoc': opts.file_per_func_invoc,
                      'only_show_thread': opts.only_show_thread,
+                     'req_beginTStamp': opts.req_beginTStamp,
+                     'req_endTStamp': opts.req_endTStamp,
+                     'req_interval': opts.req_interval,
                      },
                     querylog=opts.log,
                     extremeDebug=opts.extremeDebug,
