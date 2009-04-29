@@ -310,31 +310,8 @@ class Chronisole(object):
                 
                 # do any dumping!
                 if subfunc.dumpInfo:
-                    for paramName, paramType, paramVal in self.cf.getRawParameters(
-                            subBeginTStamp, subfunc):
-                        if subfunc.dumpInfo.get(paramName):
-                            # and we're assuming a structure, otherwise what's the
-                            #  point.  (but we realy should not assume this)
-                            structType = paramType.loseTypedef().innerType
-                            sdict = self.cf.getStructValue(subBeginTStamp, paramVal,
-                                                           structType)
-                            dumpParam = subfunc.dumpInfo[paramName]
-                            if dumpParam is True:
-                                odict = sdict
-                            else:
-                                odict = {}
-                                for fieldName in dumpParam.split(','):
-                                    fieldName = fieldName.strip()
-                                    odict[fieldName] = sdict.get(fieldName)
+                    self.showDumpForFunc(subfunc, subBeginTStamp)
 
-                            # cache for diffing purposes...
-                            uniqueCacheName = subfunc.containerPrefix + subfunc.name + '::' + paramName
-                            if uniqueCacheName in self.last_dict_for_diff:
-                                last_dict = self.last_dict_for_diff[uniqueCacheName]
-                                pout.ppdiff(pout.dictdiff(last_dict, odict))
-                            else:
-                                pout.pp(odict)
-                            self.last_dict_for_diff[uniqueCacheName] = odict
 
                 rel_max_depth = max(max_depth, depth + subfunc.depth)
                 if (subfunc.interesting or depth < rel_max_depth):
@@ -381,13 +358,18 @@ class Chronisole(object):
             if self.file_per_func_invoc:
                 pout.linkToPermutation(beginTStamp)
             retval, retval_exceptional = self.cf.getReturnValue(endTStamp, func)
-            pout('{cn}%s{fn}%s {.50}{bn}' +
+            pout('{s}%10d {cn}%s{fn}%s {.50}{bn}' +
                  (retval_exceptional and '{bge}%s{-bg}' or '%s') +
                  ' {.60}{n}%s',
-                 func.containerPrefix, func.name,
+                 beginTStamp, func.containerPrefix, func.name,
                  self._formatValue(retval, True),
                  self._formatParameters(parameters),
                  )
+
+            # do any dumping!
+            if func.dumpInfo:
+                self.showDumpForFunc(func, beginTStamp)
+
             if self.file_per_func_invoc:
                 pout.closeLink()
             pout.i(2)
@@ -902,6 +884,34 @@ class Chronisole(object):
                 pout('{g}%x %x {.20}%s', address, val, mappy.get(address))
             else:
                 pout('{n}%x %x {.20}%s', address, val, mappy.get(address))
+
+    def showDumpForFunc(self, subfunc, subBeginTStamp):
+        for paramName, paramType, paramVal in self.cf.getRawParameters(
+                            subBeginTStamp, subfunc):
+            if subfunc.dumpInfo.get(paramName):
+                # and we're assuming a structure, otherwise what's the
+                #  point.  (but we realy should not assume this)
+                structType = paramType.loseTypedef().innerType
+                sdict = self.cf.getStructValue(subBeginTStamp, paramVal,
+                                               structType)
+                dumpParam = subfunc.dumpInfo[paramName]
+                if dumpParam is True:
+                    odict = sdict
+                else:
+                    odict = {}
+                    for fieldName in dumpParam.split(','):
+                        fieldName = fieldName.strip()
+                        odict[fieldName] = sdict.get(fieldName)
+
+                # cache for diffing purposes...
+                uniqueCacheName = subfunc.containerPrefix + subfunc.name + '::' + paramName
+                if uniqueCacheName in self.last_dict_for_diff:
+                    last_dict = self.last_dict_for_diff[uniqueCacheName]
+                    pout.ppdiff(pout.dictdiff(last_dict, odict))
+                else:
+                    pout.pp(odict)
+                    self.last_dict_for_diff[uniqueCacheName] = odict
+
 
     def showBackTrace(self, tstamp, depth=0):
         '''
