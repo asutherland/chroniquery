@@ -489,10 +489,14 @@ class Chronisole(object):
                             arg_cond = func.extra[arg_cond_name]
                             if arg_cond == 'important':
                                 val = val.strip()
-                                if not (val.startswith('***') or val.isupper()):
+                                # single character things are stupid debug that
+                                #  we want...
+                                if len(val) == 1:
+                                    pass
+                                elif not (val.startswith('***') or val.isupper()):
                                     do_not_show = True
                                     break
-                                if not val.replace('*', ''):
+                                elif not val.replace('*', ''):
                                     do_not_show = True
                                     break
                                 val = val.replace('*****', '***')
