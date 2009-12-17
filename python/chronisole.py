@@ -307,7 +307,12 @@ class Chronisole(object):
                     continue
                 
                 if self.call_details:
-                    retval, retval_exceptional = self.cf.getReturnValue(subEndTStamp, subfunc)
+                    # we can only get return values if there was a return
+                    if subEndTStamp:
+                        retval, retval_exceptional = self.cf.getReturnValue(subEndTStamp, subfunc)
+                    else:
+                        retval = 'n/a'
+                        retval_exceptional = False
                     pout('{s}cpp {cn}%s{fn}%s {.50}{bn}' +
                          (retval_exceptional and '{bge}%s{-bg}' or '%s') +
                          ' {.60}{n}%s',
@@ -321,6 +326,11 @@ class Chronisole(object):
                 else:
                     pout('{s}cpp {cn}%s{fn}%s', subfunc.containerPrefix, subfunc.name)
                 pout.i(2)
+
+                # for range purposes, if the call never returned, expand the
+                #  range all the way to the end.
+                if subEndTStamp is None:
+                    subEndTStamp = self.cf._endTStamp
                 
                 # do any dumping!
                 if subfunc.dumpInfo:
