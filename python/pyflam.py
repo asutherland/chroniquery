@@ -470,6 +470,9 @@ class FlamHTML(FlamOut):
 
     def map_bg(self, name, code):
         self._cmap[name] = ('bg', self._colorcode_to_hex(code))
+
+    def map_control(self, *args):
+        pass
         
     def write_styles(self):
         # make the 'n' foreground color the link color
